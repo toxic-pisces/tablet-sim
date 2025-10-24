@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Qualitätsprüfung - Tablet Interface</title>
+
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/tablet-sim/assets/manifest-BUmHGU19.json">
+    <meta name="theme-color" content="#2a5298">
+
+    <!-- Apple PWA Support -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="QS Prüfung">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' fill='%232a5298'/><path d='M96 40 L140 96 L96 152 L52 96 Z' fill='white'/><circle cx='96' cy='96' r='15' fill='%23ef4444'/></svg>">
+
+    <!-- Barcode Scanner Library -->
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+    <!-- Styles -->
+  <script type="module" crossorigin src="/tablet-sim/assets/main-CNJBc_Fq.js"></script>
+  <link rel="stylesheet" crossorigin href="/tablet-sim/assets/main-DgocxFci.css">
+</head>
+<body>
+    <!-- Login Screen -->
+    <div id="loginScreen" class="login-container">
+        <div class="version-badge">v2.0 - Firebase</div>
+        <div class="login-box">
+            <h1 id="loginTitle">Qualitätsprüfung</h1>
+
+            <div class="number-input-display" id="loginDisplay">
+                <div class="number-input-label">Personalnummer</div>
+                <div class="number-input-value empty" id="loginValue">-</div>
+            </div>
+
+            <div class="numpad">
+                <button class="numpad-btn" onclick="addLoginDigit('1')">1</button>
+                <button class="numpad-btn" onclick="addLoginDigit('2')">2</button>
+                <button class="numpad-btn" onclick="addLoginDigit('3')">3</button>
+                <button class="numpad-btn" onclick="addLoginDigit('4')">4</button>
+                <button class="numpad-btn" onclick="addLoginDigit('5')">5</button>
+                <button class="numpad-btn" onclick="addLoginDigit('6')">6</button>
+                <button class="numpad-btn" onclick="addLoginDigit('7')">7</button>
+                <button class="numpad-btn" onclick="addLoginDigit('8')">8</button>
+                <button class="numpad-btn" onclick="addLoginDigit('9')">9</button>
+                <button class="numpad-btn special" onclick="clearLoginNumber()">⌫</button>
+                <button class="numpad-btn" onclick="addLoginDigit('0')">0</button>
+                <button class="numpad-btn" onclick="login()" style="background: linear-gradient(135deg, #10b981, #059669); color: white; border: none;">✓</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Application -->
+    <div id="mainApp" class="main-container hidden">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="user-profile">
+                <div class="user-avatar">👤</div>
+                <div class="user-name" id="userName">Prüfer</div>
+            </div>
+
+            <button class="sidebar-btn" onclick="openStatistics()" title="Statistik">📊</button>
+            <button class="sidebar-btn" onclick="toggleLanguage()" title="Sprache" id="languageBtn">🇩🇪</button>
+            <button class="sidebar-btn" onclick="togglePause()" title="Pause">⏸️</button>
+            <button class="sidebar-btn" onclick="openDatabase()" title="Datenbank">🗄️</button>
+            <button class="sidebar-btn" onclick="openStandards()" title="Standards">⚙️</button>
+
+            <button class="undo-btn" onclick="goBack()" title="Zurück">↶</button>
+        </div>
+
+        <!-- Content Area -->
+        <div class="content" id="contentArea"></div>
+    </div>
+
+    <!-- Pause Screen -->
+    <div id="pauseScreen" class="pause-screen hidden">
+        <div class="pause-content">
+            <div class="pause-icon">⏸️</div>
+            <h1 id="pauseTitle">ABWESEND</h1>
+            <div class="pause-time" id="pauseTime">seit 00:00:00</div>
+            <button class="btn-primary" onclick="togglePause()" id="returnBtn">Wieder anwesend</button>
+        </div>
+    </div>
+
+    <!-- Main JavaScript Module -->
+</body>
+</html>

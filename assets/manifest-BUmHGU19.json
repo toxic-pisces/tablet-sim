@@ -1,0 +1,24 @@
+{
+  "name": "Qualitätsprüfung - Tablet Interface",
+  "short_name": "QS Prüfung",
+  "description": "Tablet-Interface für Qualitätsprüfung",
+  "start_url": "./test.html",
+  "display": "standalone",
+  "background_color": "#f5f7fa",
+  "theme_color": "#2a5298",
+  "orientation": "landscape",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' fill='%232a5298'/><path d='M96 40 L140 96 L96 152 L52 96 Z' fill='white'/><circle cx='96' cy='96' r='15' fill='%23ef4444'/></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' fill='%232a5298'/><path d='M256 100 L400 256 L256 412 L112 256 Z' fill='white'/><circle cx='256' cy='256' r='40' fill='%23ef4444'/></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
