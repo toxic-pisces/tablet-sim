@@ -1,7 +1,10 @@
-const CACHE_NAME = 'qs-pruefung-v10';
+const CACHE_NAME = 'qs-pruefung-v11';
+const BASE_PATH = '/tablet-sim/'; // Passe das an deinen Repo-Namen an!
 const urlsToCache = [
-  './test.html',
-  './manifest.json',
+  `${BASE_PATH}index.html`,
+  `${BASE_PATH}test.html`,
+  `${BASE_PATH}manifest.json`,
+  `${BASE_PATH}assets/`, // Optional: alle Assets, ggf. spezifische Dateien listen
   'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js'
 ];
 
