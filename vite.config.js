@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  base: '/tablet-sim/',
   root: '.',
   build: {
     outDir: 'dist',
