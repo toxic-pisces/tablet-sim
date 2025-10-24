@@ -1,0 +1,23 @@
+{
+  "name": "firebase-simulation-project",
+  "version": "1.0.0",
+  "description": "A project to simulate functionality with multiple devices using Firebase.",
+  "main": "src/main.js",
+  "scripts": {
+
+    "start": "firebase serve",
+    "build": "echo 'Build script not defined'",
+    "deploy": "firebase deploy"
+  },
+  "dependencies": {
+    "firebase": "^9.0.0"
+  },
+  "devDependencies": {},
+  "keywords": [
+    "firebase",
+    "simulation",
+    "multi-device"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}

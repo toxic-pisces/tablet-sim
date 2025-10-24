@@ -1,0 +1,2572 @@
+import { initializeDatabase, listenToData } from './firebase.js';
+import {
+  state,
+  initializeState,
+  addTBKEntry,
+  getTBKEntry,
+  addInspection,
+  updateInspection,
+  getInspection,
+  updateContainerCapacity,
+  addDefectType as addDefectTypeToDb,
+  removeDefectType as removeDefectTypeFromDb,
+  getTBKDatabaseAsArray,
+  getInspectionDatabaseAsArray
+} from './state.js';
+
+// Login Numpad
+let loginNumberInput = '';
+
+function addLoginDigit(digit) {
+    if (loginNumberInput.length < 10) {
+        loginNumberInput += digit;
+        updateLoginDisplay();
+
+        // Vibration feedback
+        if ('vibrate' in navigator) {
+            navigator.vibrate(50);
+        }
+    }
+}
+
+function clearLoginNumber() {
+    if (loginNumberInput.length > 0) {
+        loginNumberInput = loginNumberInput.slice(0, -1);
+        updateLoginDisplay();
+
+        // Vibration feedback
+        if ('vibrate' in navigator) {
+            navigator.vibrate(50);
+        }
+    }
+}
+
+function updateLoginDisplay() {
+    const display = document.getElementById('loginDisplay');
+    const valueEl = document.getElementById('loginValue');
+
+    if (!valueEl) return;
+
+    if (loginNumberInput.length === 0) {
+        valueEl.innerHTML = '-';
+        valueEl.classList.add('empty');
+        display.classList.remove('active');
+    } else {
+        // Build display with animation for each digit
+        let displayValue = '';
+        for (let i = 0; i < loginNumberInput.length; i++) {
+            displayValue += `<span class="digit">${loginNumberInput[i]}</span>`;
+        }
+        valueEl.innerHTML = displayValue;
+        valueEl.classList.remove('empty');
+        display.classList.add('active');
+    }
+}
+
+// Translations
+const translations = {
+    de: {
+        loginTitle: 'Qualitätsprüfung',
+        personnelPlaceholder: 'Personalnummer',
+        loginBtn: 'Anmelden',
+        serie: 'Serie',
+        sonderfall: 'Sonderfall',
+        sicht: 'Sicht',
+        sonstiges: 'Sonstiges',
+        lehre: 'Lehre',
+        mass: 'Maß',
+        scanComplete: 'Scan abgeschlossen',
+        containerNumber: 'Behälternummer eingeben',
+        confirm: 'Bestätigen',
+        quantity: 'Teileanzahl',
+        fullContainer: 'Voller Behälter',
+        manual: 'Manuell eingeben',
+        articleNumber: 'Artikelnummer',
+        totalQuantity: 'Gesamtmenge',
+        defectCount: 'Ausschuss',
+        inspector: 'Prüfer',
+        inspectionComplete: 'Prüfung abgeschlossen',
+        resetInspection: 'Prüfung zurücksetzen',
+        nextInspection: 'Nächste Prüfung',
+        pauseTitle: 'ABWESEND',
+        returnBtn: 'Wieder anwesend',
+        featureNotAvailable: 'Feature nicht verfügbar',
+        featureInProgress: 'Feature in Arbeit',
+        active: 'Aktiv',
+        finished: 'Fertig'
+    },
+    pl: {
+        loginTitle: 'Kontrola Jakości',
+        personnelPlaceholder: 'Numer personelu',
+        loginBtn: 'Zaloguj się',
+        serie: 'Seria',
+        sonderfall: 'Przypadek specjalny',
+        sicht: 'Wzrok',
+        sonstiges: 'Inne',
+        lehre: 'Szablon',
+        mass: 'Wymiar',
+        scanComplete: 'Skanowanie zakończone',
+        containerNumber: 'Wprowadź numer kontenera',
+        confirm: 'Potwierdź',
+        quantity: 'Ilość części',
+        fullContainer: 'Pełny kontener (200 części)',
+        manual: 'Wprowadź ręcznie',
+        articleNumber: 'Numer artykułu',
+        totalQuantity: 'Całkowita ilość',
+        defectCount: 'Złom',
+        inspector: 'Inspektor',
+        inspectionComplete: 'Kontrola zakończona',
+        resetInspection: 'Resetuj kontrolę',
+        nextInspection: 'Następna kontrola',
+        pauseTitle: 'NIEOBECNY',
+        returnBtn: 'Z powrotem',
+        featureNotAvailable: 'Funkcja niedostępna',
+        featureInProgress: 'Funkcja w toku',
+        active: 'Aktywny',
+        finished: 'Zakończone'
+    }
+};
+
+function t(key) {
+    return translations[state.language][key] || key;
+}
+
+// Login
+function login() {
+    if (loginNumberInput.length > 0) {
+        // Vibration feedback
+        if ('vibrate' in navigator) {
+            navigator.vibrate(200);
+        }
+
+        state.personnelNumber = loginNumberInput;
+        state.userName = 'P-' + state.personnelNumber;
+        document.getElementById('userName').textContent = state.userName;
+        document.getElementById('loginScreen').classList.add('hidden');
+        document.getElementById('mainApp').classList.remove('hidden');
+        showMainMenu();
+    } else {
+        // Shake animation if empty
+        const display = document.getElementById('loginDisplay');
+        display.style.animation = 'none';
+        setTimeout(() => {
+            display.style.animation = 'shake 0.5s';
+        }, 10);
+    }
+}
+
+// Language Toggle
+function toggleLanguage() {
+    state.language = state.language === 'de' ? 'pl' : 'de';
+    const flagBtn = document.getElementById('languageBtn');
+    flagBtn.textContent = state.language === 'de' ? '🇩🇪' : '🇵🇱';
+    updateLanguage();
+}
+
+function updateLanguage() {
+    document.getElementById('loginTitle').textContent = t('loginTitle');
+    const loginLabel = document.querySelector('#loginScreen .number-input-label');
+    if (loginLabel) {
+        loginLabel.textContent = t('personnelPlaceholder');
+    }
+    document.getElementById('pauseTitle').textContent = t('pauseTitle');
+    document.getElementById('returnBtn').textContent = t('returnBtn');
+
+    // Reload current screen with new language
+    const currentScreen = state.currentScreen;
+    if (currentScreen === 'main') showMainMenu();
+    else if (currentScreen === 'serie') showSerieMenu();
+}
+
+// Pause
+function togglePause() {
+    state.isPaused = !state.isPaused;
+    const pauseScreen = document.getElementById('pauseScreen');
+
+    if (state.isPaused) {
+        state.pauseStart = new Date();
+        pauseScreen.classList.remove('hidden');
+        updatePauseTime();
+    } else {
+        pauseScreen.classList.add('hidden');
+        state.pauseStart = null;
+    }
+}
+
+function updatePauseTime() {
+    if (!state.isPaused) return;
+
+    const now = new Date();
+    const diff = now - state.pauseStart;
+    const hours = Math.floor(diff / 3600000);
+    const minutes = Math.floor((diff % 3600000) / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+
+    document.getElementById('pauseTime').textContent =
+        `seit ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+
+    setTimeout(updatePauseTime, 1000);
+}
+
+// Navigation
+function goBack() {
+    if (state.history.length > 0) {
+        const previous = state.history.pop();
+        previous();
+    }
+}
+
+function addToHistory(fn) {
+    state.history.push(fn);
+}
+
+function openStatistics() {
+    window.open('https://toxic-pisces.github.io/haering/testt.html', '_blank');
+}
+
+// Main Menu
+function showMainMenu() {
+    state.currentScreen = 'main';
+    state.history = [];
+    const content = document.getElementById('contentArea');
+    content.innerHTML = `
+        <div class="content-grid grid-2">
+            <button class="big-btn animate-scale stagger-1" onclick="showSerieMenu()">${t('serie')}</button>
+            <button class="big-btn animate-scale stagger-2" onclick="showFeatureNotAvailable()">${t('sonderfall')}</button>
+        </div>
+    `;
+}
+
+// Serie Menu
+function showSerieMenu() {
+    addToHistory(showMainMenu);
+    state.currentScreen = 'serie';
+    const content = document.getElementById('contentArea');
+    content.innerHTML = `
+        <div class="content-grid grid-4">
+            <button class="big-btn animate-scale stagger-1" onclick="startInspection('sicht')">${t('sicht')}</button>
+            <button class="big-btn animate-scale stagger-2" onclick="showFeatureInProgress()">${t('sonstiges')}</button>
+            <button class="big-btn animate-scale stagger-3" onclick="startInspection('lehre')">${t('lehre')}</button>
+            <button class="big-btn animate-scale stagger-4" onclick="startInspection('mass')">${t('mass')}</button>
+        </div>
+    `;
+}
+
+// Start Inspection
+function startInspection(type) {
+    addToHistory(showSerieMenu);
+    state.currentInspection.inspectionType = type;
+    showScanSimulation();
+}
+
+function validateInspectionSequence(tbkNumber, containerNumber, requestedType) {
+    // Validation happens after scanning
+    const batchNummer = getBatchNumber(tbkNumber, containerNumber);
+    if (!batchNummer) return null;
+
+    // Get inspection sequence from standards
+    const sequence = state.partTypeStandards.Housing.inspectionSequence;
+
+    // If sequence is empty, no validations needed
+    if (!sequence || sequence.length === 0) return null;
+
+    // Map inspection types to their short codes
+    const typeToCode = { 'lehre': 'L', 'mass': 'M', 'sicht': 'S' };
+    const codeToLabel = { 'L': 'Lehre', 'M': 'Maß', 'S': 'Sicht' };
+
+    // Get all inspections for this batch (use array version)
+    const batchInspections = getInspectionDatabaseAsArray().filter(
+        entry => entry.batchNummer === batchNummer
+    );
+
+    // Find which step the requested inspection is in
+    let requestedStepIndex = -1;
+    for (let i = 0; i < sequence.length; i++) {
+        if (sequence[i].includes(requestedType)) {
+            requestedStepIndex = i;
+            break;
+        }
+    }
+
+    // If inspection is not in sequence, it's disabled
+    if (requestedStepIndex === -1) {
+        const label = codeToLabel[typeToCode[requestedType]];
+        return `${label}-Prüfung ist in den Standards nicht aktiviert.`;
+    }
+
+    // Check if all inspections from previous steps have been completed
+    for (let stepIndex = 0; stepIndex < requestedStepIndex; stepIndex++) {
+        const requiredInspections = sequence[stepIndex];
+
+        // Check each inspection in this step
+        for (const requiredType of requiredInspections) {
+            const requiredCode = typeToCode[requiredType];
+            const hasCompleted = batchInspections.some(entry => entry.inspektion === requiredCode);
+
+            if (!hasCompleted) {
+                const requestedLabel = codeToLabel[typeToCode[requestedType]];
+                const requiredLabel = codeToLabel[requiredCode];
+                return `${requestedLabel}-Prüfung kann erst nach ${requiredLabel}-Prüfung durchgeführt werden.`;
+            }
+        }
+    }
+
+    return null;
+}
+
+async function checkContainerCapacity(tbkNumber, containerNumber, inspectionType) {
+    const batchNummer = getBatchNumber(tbkNumber, containerNumber);
+    if (!batchNummer) return null;
+
+    const containerCapacity = state.partTypeStandards.Housing.containerCapacity;
+    const typeToCode = { 'lehre': 'L', 'mass': 'M', 'sicht': 'S' };
+    const codeToLabel = { 'L': 'Lehre', 'M': 'Maß', 'S': 'Sicht' };
+    const inspectionCode = typeToCode[inspectionType];
+
+    // Calculate actual parts in container (adjusted for NIO from previous inspections)
+    const actualPartsInContainer = calculateActualPartsInContainer(batchNummer, inspectionType);
+
+    // IMPORTANT: Get FRESH data from Firebase, not cached local state
+    console.log('🔍 Fetching fresh inspection data from Firebase...');
+    
+    // Wait a moment for Firebase to sync (in case data was just written)
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    const allInspections = getInspectionDatabaseAsArray();
+    console.log('📊 Total inspections in database:', allInspections.length);
+
+    // Get ALL inspections of this type for this batch
+    const allInspectionsOfType = allInspections.filter(
+        entry => entry.batchNummer === batchNummer &&
+                 entry.inspektion === inspectionCode
+    );
+
+    console.log(`📊 Inspections of type ${inspectionCode} for batch ${batchNummer}:`, allInspectionsOfType.length);
+
+    // If there are NO inspections at all, this is the first one -> allow
+    if (allInspectionsOfType.length === 0) {
+        console.log('✅ First inspection for this type - allowing');
+        state.currentInspection.remainingCapacity = actualPartsInContainer;
+        state.currentInspection.actualPartsInContainer = actualPartsInContainer;
+        return null; // Allow to proceed
+    }
+
+    // Get only COMPLETED inspections of this type for this batch (ende must exist AND not be null)
+    const completedInspections = allInspectionsOfType.filter(
+        entry => entry.ende && entry.ende !== null && entry.ende !== undefined
+    );
+
+    // Check if there's an ACTIVE (unfinished) inspection (ende is null, undefined, or doesn't exist)
+    const activeInspection = allInspectionsOfType.find(
+        entry => !entry.ende || entry.ende === null || entry.ende === undefined
+    );
+
+    console.log(`✔️ Completed inspections:`, completedInspections.length);
+    console.log(`⏳ Active inspections:`, activeInspection ? 'YES' : 'NO');
+    
+    // Debug: Log all inspections with their ende status
+    allInspectionsOfType.forEach((insp, idx) => {
+        console.log(`  Inspection ${idx + 1}:`, {
+            pruefungsNummer: insp.pruefungsNummer,
+            total: insp.total,
+            ende: insp.ende,
+            endeType: typeof insp.ende,
+            isComplete: !!(insp.ende && insp.ende !== null),
+            isActive: !insp.ende || insp.ende === null
+        });
+    });
+
+    // If there's an active inspection, allow joining (bypass capacity check completely)
+    if (activeInspection) {
+        console.log('✅ Active inspection found - bypassing capacity check, allowing join');
+        console.log('📋 Active inspection details:', {
+            pruefungsNummer: activeInspection.pruefungsNummer,
+            pruefer: activeInspection.pruefer,
+            total: activeInspection.total,
+            ende: activeInspection.ende
+        });
+        state.currentInspection.remainingCapacity = actualPartsInContainer;
+        state.currentInspection.actualPartsInContainer = actualPartsInContainer;
+        return null; // Allow to proceed
+    }
+
+    // If no completed inspections (only active ones), allow
+    if (completedInspections.length === 0) {
+        console.log('✅ No completed inspections - allowing');
+        state.currentInspection.remainingCapacity = actualPartsInContainer;
+        state.currentInspection.actualPartsInContainer = actualPartsInContainer;
+        return null;
+    }
+
+    // Calculate total parts already inspected for this type (only completed with ende !== null)
+    const totalInspected = completedInspections.reduce((sum, entry) => sum + entry.total, 0);
+
+    console.log(`📊 Total inspected (completed only): ${totalInspected}/${actualPartsInContainer}`);
+
+    // Calculate remaining capacity based on actual parts in container
+    const remainingCapacity = actualPartsInContainer - totalInspected;
+
+    if (remainingCapacity <= 0) {
+        const label = codeToLabel[inspectionCode];
+        console.log('❌ Container full - blocking');
+        return `Dieser Behälter ist für ${label}-Prüfung bereits voll (${actualPartsInContainer}/${actualPartsInContainer} Teile geprüft).`;
+    }
+
+    console.log(`✅ Remaining capacity: ${remainingCapacity} parts`);
+
+    // Store remaining capacity for quantity selection
+    state.currentInspection.remainingCapacity = remainingCapacity;
+    state.currentInspection.actualPartsInContainer = actualPartsInContainer;
+
+    return null;
+}
+
+function calculateActualPartsInContainer(batchNummer, currentInspectionType) {
+    const containerCapacity = state.partTypeStandards.Housing.containerCapacity;
+    const sequence = state.partTypeStandards.Housing.inspectionSequence;
+    const typeToCode = { 'lehre': 'L', 'mass': 'M', 'sicht': 'S' };
+
+    // Find which step the current inspection is in
+    let currentStepIndex = -1;
+    for (let i = 0; i < sequence.length; i++) {
+        if (sequence[i].includes(currentInspectionType)) {
+            currentStepIndex = i;
+            break;
+        }
+    }
+
+    if (currentStepIndex === -1) return containerCapacity;
+
+    // Sum up all NIO parts from previous inspection steps
+    let totalNIO = 0;
+
+    for (let stepIndex = 0; stepIndex < currentStepIndex; stepIndex++) {
+        const inspectionsInStep = sequence[stepIndex];
+
+        for (const inspType of inspectionsInStep) {
+            const inspCode = typeToCode[inspType];
+
+            // Get all completed inspections of this type for this batch (use array version)
+            const completedInspections = getInspectionDatabaseAsArray().filter(
+                entry => entry.batchNummer === batchNummer &&
+                         entry.inspektion === inspCode &&
+                         entry.nio !== null
+            );
+
+            // Sum NIO from this inspection type
+            const nioFromInspection = completedInspections.reduce((sum, entry) => sum + entry.nio, 0);
+            totalNIO += nioFromInspection;
+        }
+    }
+
+    // Return container capacity minus all NIO from previous steps
+    return containerCapacity - totalNIO;
+}
+
+function showScanSimulation() {
+    // Open the real barcode scanner instead of simulation
+    openBarcodeScanner();
+}
+
+function completeScan() {
+    // This function is now replaced by the real scanner
+    // Kept for backwards compatibility
+    state.currentInspection.articleNumber = '1234567';
+    state.currentInspection.tz = Math.floor(Math.random() * 11);
+    showScanConfirmation();
+}
+
+// Scan Confirmation
+function showScanConfirmation() {
+    addToHistory(showScanSimulation);
+    const content = document.getElementById('contentArea');
+    content.innerHTML = `
+        <div class="data-confirmation animate-scale">
+            <h2 class="animate-slide-up">Teilebegleitkarte gescannt</h2>
+            <div class="data-row animate-slide-right stagger-1">
+                <span class="data-label">TBK Nummer:</span>
+                <span class="data-value">${state.currentInspection.articleNumber}</span>
+            </div>
+            <div class="data-row animate-slide-right stagger-2">
+                <span class="data-label">Artikel:</span>
+                <span class="data-value">Housing</span>
+            </div>
+            <div class="data-row animate-slide-right stagger-3">
+                <span class="data-label">TZ:</span>
+                <span class="data-value">${state.currentInspection.tz}</span>
+            </div>
+            <button class="btn-primary animate-slide-up stagger-4" onclick="showContainerNumberInput()">${t('confirm')}</button>
+        </div>
+    `;
+}
+
+// Container Number Input with Numpad
+let containerNumberInput = '';
+
+function showContainerNumberInput() {
+    addToHistory(showScanConfirmation);
+    containerNumberInput = '';
+
+    const content = document.getElementById('contentArea');
+    content.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: center; height: 100%; padding: 20px;">
+            <div style="max-width: 500px; width: 100%;">
+                <h2 style="text-align: center; margin-bottom: 25px; color: #1a202c; font-size: 24px;">Behälternummer eingeben</h2>
+
+                <div class="number-input-display" id="containerDisplay">
+                    <div class="number-input-label">6-stellige Behälternummer</div>
+                    <div class="number-input-value empty" id="containerValue">------</div>
+                </div>
+
+                <div class="numpad">
+                    <button class="numpad-btn" onclick="addContainerDigit('1')">1</button>
+                    <button class="numpad-btn" onclick="addContainerDigit('2')">2</button>
+                    <button class="numpad-btn" onclick="addContainerDigit('3')">3</button>
+                    <button class="numpad-btn" onclick="addContainerDigit('4')">4</button>
+                    <button class="numpad-btn" onclick="addContainerDigit('5')">5</button>
+                    <button class="numpad-btn" onclick="addContainerDigit('6')">6</button>
+                    <button class="numpad-btn" onclick="addContainerDigit('7')">7</button>
+                    <button class="numpad-btn" onclick="addContainerDigit('8')">8</button>
+                    <button class="numpad-btn" onclick="addContainerDigit('9')">9</button>
+                    <button class="numpad-btn special" onclick="clearContainerNumber()">⌫</button>
+                    <button class="numpad-btn" onclick="addContainerDigit('0')">0</button>
+                    <button class="numpad-btn" onclick="submitContainerNumber()" style="background: linear-gradient(135deg, #10b981, #059669); color: white; border: none;">✓</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    updateContainerDisplay();
+}
+
+function addContainerDigit(digit) {
+    if (containerNumberInput.length < 6) {
+        containerNumberInput += digit;
+        updateContainerDisplay();
+
+        // Vibration feedback
+        if ('vibrate' in navigator) {
+            navigator.vibrate(50);
+        }
+    }
+}
+
+function clearContainerNumber() {
+    if (containerNumberInput.length > 0) {
+        containerNumberInput = containerNumberInput.slice(0, -1);
+        updateContainerDisplay();
+
+        // Vibration feedback
+        if ('vibrate' in navigator) {
+            navigator.vibrate(50);
+        }
+    }
+}
+
+function updateContainerDisplay() {
+    const display = document.getElementById('containerDisplay');
+    const valueEl = document.getElementById('containerValue');
+
+    if (!valueEl) return;
+
+    if (containerNumberInput.length === 0) {
+        valueEl.innerHTML = '------';
+        valueEl.classList.add('empty');
+        display.classList.remove('active');
+    } else {
+        // Build display with animation for each digit
+        let displayValue = '';
+        for (let i = 0; i < 6; i++) {
+            if (i < containerNumberInput.length) {
+                displayValue += `<span class="digit">${containerNumberInput[i]}</span>`;
+            } else {
+                displayValue += '-';
+            }
+        }
+        valueEl.innerHTML = displayValue;
+        valueEl.classList.remove('empty');
+        display.classList.add('active');
+    }
+}
+
+async function submitContainerNumber() {
+    if (containerNumberInput.length === 6) {
+        state.currentInspection.containerNumber = containerNumberInput;
+
+        // Add TBK + Container to database (creates new batch if needed)
+        await addTbkToDatabase(state.currentInspection.articleNumber, containerNumberInput);
+
+        // Validate inspection sequence NOW (after we have container number)
+        const validationError = validateInspectionSequence(
+            state.currentInspection.articleNumber,
+            containerNumberInput,
+            state.currentInspection.inspectionType
+        );
+        if (validationError) {
+            showModal({
+                title: 'Reihenfolge nicht eingehalten',
+                content: `<p>${validationError}</p>`,
+                buttons: [
+                    { text: 'Zurück zum Menü', action: () => { closeModal(); showSerieMenu(); } }
+                ]
+            });
+            return;
+        }
+
+        // Check container capacity for this inspection type (async - wait for Firebase)
+        const capacityError = await checkContainerCapacity(
+            state.currentInspection.articleNumber,
+            containerNumberInput,
+            state.currentInspection.inspectionType
+        );
+        if (capacityError) {
+            showModal({
+                title: 'Behälter voll',
+                content: `<p>${capacityError}</p>`,
+                buttons: [
+                    { text: 'Zurück zum Menü', action: () => { closeModal(); showSerieMenu(); } }
+                ]
+            });
+            return;
+        }
+
+        // Vibration feedback
+        if ('vibrate' in navigator) {
+            navigator.vibrate(200);
+        }
+
+        // Check if there's an active inspection - if yes, skip quantity selection
+        const activeInspection = await checkForActiveInspection();
+        if (activeInspection) {
+            // Directly join the active inspection without asking for quantity
+            await setQuantity(activeInspection.total);
+        } else {
+            // Show quantity selection for first inspector
+            showQuantitySelection();
+        }
+    } else {
+        // Shake animation if not complete
+        const display = document.getElementById('containerDisplay');
+        display.style.animation = 'none';
+        setTimeout(() => {
+            display.style.animation = 'shake 0.5s';
+        }, 10);
+    }
+}
+
+// Quantity Selection
+function showQuantitySelection() {
+    addToHistory(showScanConfirmation);
+    const content = document.getElementById('contentArea');
+
+    // Get actual parts in container (adjusted for NIO from previous inspections)
+    const actualPartsInContainer = state.currentInspection.actualPartsInContainer ||
+                                  state.partTypeStandards.Housing.containerCapacity;
+
+    // Check if there's a remaining capacity limit (if container was partially inspected)
+    const remainingCapacity = state.currentInspection.remainingCapacity || actualPartsInContainer;
+    const containerCapacity = state.partTypeStandards.Housing.containerCapacity;
+    const isPartialContainer = remainingCapacity < actualPartsInContainer;
+
+    let fullContainerBtn = '';
+    if (remainingCapacity >= actualPartsInContainer) {
+        // Full container possible (show actual parts, not original capacity)
+        fullContainerBtn = `<button class="big-btn animate-scale stagger-1" onclick="setQuantity(${actualPartsInContainer})">${t('fullContainer')} (${actualPartsInContainer} Stk.)</button>`;
+    } else if (remainingCapacity > 0) {
+        // Only partial container possible
+        fullContainerBtn = `<button class="big-btn animate-scale stagger-1" onclick="setQuantity(${remainingCapacity})">Restkapazität (${remainingCapacity} Stk.)</button>`;
+    }
+
+    content.innerHTML = `
+        <div class="content-grid grid-2">
+            ${fullContainerBtn}
+            <button class="big-btn animate-scale stagger-2" onclick="showManualQuantity()">${t('manual')}</button>
+        </div>
+    `;
+}
+
+async function setQuantity(qty) {
+    try {
+        console.log('🔵 setQuantity called with qty:', qty);
+        state.currentInspection.quantity = qty;
+        state.currentInspection.defects = {};
+        state.currentInspection.totalDefects = 0;
+
+        console.log('🔵 Checking for active inspection...');
+        // Check if there's already an active inspection for this batch
+        const activeInspection = await checkForActiveInspection();
+        console.log('🔵 Active inspection found:', activeInspection ? 'YES' : 'NO');
+
+        if (activeInspection) {
+            // Join existing inspection
+            console.log('🔵 Joining active inspection...');
+            await joinActiveInspection(activeInspection);
+        } else {
+            // Create new inspection database entry
+            console.log('🔵 Creating new inspection entry...');
+            await createInspectionDatabaseEntry();
+            
+            // Show notification that inspection started
+            showNotification('🎯 Prüfung gestartet', `Du prüfst ${qty} Teile`, 'success');
+        }
+
+        console.log('🔵 Showing inspection interface...');
+        showInspectionInterface();
+    } catch (error) {
+        console.error('❌ Error in setQuantity:', error);
+        alert('Fehler beim Starten der Prüfung: ' + error.message);
+    }
+}
+
+// Inspection Database Functions
+
+/**
+ * Check if there's already an active (unfinished) inspection for this batch
+ */
+async function checkForActiveInspection() {
+    const batchNummer = getBatchNumber(
+        state.currentInspection.articleNumber,
+        state.currentInspection.containerNumber
+    );
+
+    if (!batchNummer) {
+        console.log('🔍 checkForActiveInspection: No batch number found');
+        return null;
+    }
+
+    const inspectionCode = state.currentInspection.inspectionType === 'mass' ? 'M' :
+                          state.currentInspection.inspectionType === 'sicht' ? 'S' : 'L';
+
+    console.log('🔍 checkForActiveInspection: Looking for batch', batchNummer, 'type', inspectionCode);
+
+    // Find active inspections (where ende is null or doesn't exist)
+    const allInspections = getInspectionDatabaseAsArray();
+    console.log('🔍 checkForActiveInspection: Total inspections in DB:', allInspections.length);
+    
+    const activeInspection = allInspections.find(
+        insp => {
+            const matches = insp.batchNummer === batchNummer &&
+                           (!insp.ende || insp.ende === null || insp.ende === undefined) &&
+                           insp.inspektion === inspectionCode;
+            
+            if (insp.batchNummer === batchNummer && insp.inspektion === inspectionCode) {
+                console.log('🔍 Found matching inspection:', {
+                    batch: insp.batchNummer,
+                    type: insp.inspektion,
+                    ende: insp.ende,
+                    isActive: !insp.ende,
+                    matches: matches
+                });
+            }
+            
+            return matches;
+        }
+    );
+
+    console.log('🔍 checkForActiveInspection result:', activeInspection ? 'FOUND' : 'NOT FOUND');
+    return activeInspection || null;
+}
+
+/**
+ * Join an existing active inspection
+ */
+async function joinActiveInspection(activeInspection) {
+    console.log('🔵 Joining active inspection:', activeInspection);
+    
+    // Set current inspection to the active one
+    state.currentInspection.quantity = activeInspection.total;
+    state.currentInspection.defects = activeInspection.defects || {};
+    state.currentInspection.totalDefects = activeInspection.nio || 0;
+
+    // Create inspection key from batch and prüfungsnummer
+    const inspectionKey = `${activeInspection.batchNummer}-${activeInspection.pruefungsNummer}`;
+    state.currentInspection.inspectionDbId = inspectionKey;
+
+    // Add current user to activeInspectors list
+    const currentInspectors = activeInspection.activeInspectors || [activeInspection.pruefer];
+    if (!currentInspectors.includes(state.personnelNumber)) {
+        currentInspectors.push(state.personnelNumber);
+
+        // Calculate parts per inspector
+        const partsPerInspector = Math.floor(activeInspection.total / currentInspectors.length);
+
+        await updateInspection(inspectionKey, {
+            activeInspectors: currentInspectors
+        });
+
+        // Show notification to joining user
+        const otherInspectors = currentInspectors.filter(p => p !== state.personnelNumber);
+        showNotification(
+            '� Prüfung beigetreten',
+            `Du prüfst mit ${otherInspectors.length} ${otherInspectors.length === 1 ? 'Prüfer' : 'Prüfern'} zusammen • Je ${partsPerInspector} Teile`,
+            'success',
+            5000
+        );
+
+        console.log(`✅ Prüfer ${state.personnelNumber} joined inspection ${inspectionKey}`);
+    } else {
+        console.log(`ℹ️ Prüfer ${state.personnelNumber} already in this inspection`);
+    }
+
+    // Setup real-time listener for this inspection
+    setupInspectionListener(inspectionKey);
+}
+
+/**
+ * Setup real-time listener for a specific inspection
+ */
+function setupInspectionListener(inspectionKey) {
+    // Listen to changes on this inspection
+    listenToData(`inspectionDatabase/${inspectionKey}`, (data) => {
+        if (!data) return;
+
+        // Update local state with remote changes
+        if (data.defects) {
+            state.currentInspection.defects = data.defects;
+        }
+        if (data.nio !== null && data.nio !== undefined) {
+            state.currentInspection.totalDefects = data.nio;
+        }
+        if (data.total !== null && data.total !== undefined) {
+            state.currentInspection.quantity = data.total;
+        }
+
+        // Update UI
+        updateDefectCounters();
+        
+        // Update active inspectors display in real-time
+        updateActiveInspectorsDisplay(data.activeInspectors || []);
+
+        // Check if a new inspector joined
+        if (data.activeInspectors && data.activeInspectors.length > 1) {
+            const otherInspectors = data.activeInspectors.filter(p => p !== state.personnelNumber);
+
+            // Show notification if someone new joined (only once per inspector)
+            if (otherInspectors.length > 0 && !state.notifiedInspectors) {
+                state.notifiedInspectors = [];
+            }
+
+            otherInspectors.forEach(inspector => {
+                if (!state.notifiedInspectors.includes(inspector)) {
+                    state.notifiedInspectors.push(inspector);
+
+                    // Calculate parts per inspector
+                    const partsPerInspector = Math.floor(data.total / data.activeInspectors.length);
+                    
+                    // Show notification
+                    showNotification(
+                        '👥 Neuer Prüfer',
+                        `Prüfer ${inspector} arbeitet jetzt mit • Je ${partsPerInspector} Teile`,
+                        'info',
+                        4000
+                    );
+                }
+            });
+        }
+
+        // Check if inspection was completed (ende field added)
+        if (data.ende && !state.inspectionCompletedNotified) {
+            state.inspectionCompletedNotified = true;
+            
+            // Show notification if someone else completed it
+            if (data.ende && state.currentInspection.inspectionDbId === inspectionKey) {
+                showNotification(
+                    '✅ Prüfung abgeschlossen',
+                    `IO: ${data.io || 0} • NIO: ${data.nio || 0}`,
+                    'success',
+                    5000
+                );
+            }
+        }
+    });
+}
+
+// Helper function to update active inspectors display
+function updateActiveInspectorsDisplay(activeInspectors) {
+    console.log('🔄 updateActiveInspectorsDisplay called with:', activeInspectors);
+    
+    const el = document.getElementById('activeInspectorsDisplay');
+    if (!el) {
+        console.log('⚠️ activeInspectorsDisplay element not found in DOM');
+        return;
+    }
+
+    const otherActive = activeInspectors.filter(p => p !== state.personnelNumber);
+    console.log('📊 Current user:', state.personnelNumber, 'Others:', otherActive);
+
+    if (activeInspectors.length === 1) {
+        // Only current user
+        console.log('✅ Showing: Only you');
+        el.innerHTML = '<span style="color: #94a3b8; font-size: 18px;">Nur du</span>';
+        
+        // Update total quantity display to show full amount
+        const totalEl = document.getElementById('totalQuantityDisplay');
+        if (totalEl) {
+            totalEl.textContent = state.currentInspection.quantity;
+        }
+    } else {
+        // Multiple inspectors
+        const partsPerInspector = Math.floor(state.currentInspection.quantity / activeInspectors.length);
+        console.log('✅ Showing:', activeInspectors.length, 'inspectors, each gets', partsPerInspector, 'parts');
+        el.innerHTML = `
+            <span class="status-indicator status-active"></span>
+            <span style="display: flex; flex-direction: column; align-items: flex-start;">
+                <span style="font-size: 18px;">${activeInspectors.length} Prüfer (je ${partsPerInspector} Teile)</span>
+                <span style="font-size: 14px; color: #64748b;">${activeInspectors.map(p => `P-${p}`).join(', ')}</span>
+            </span>
+        `;
+        
+        // Update total quantity display to show distributed amount
+        const totalEl = document.getElementById('totalQuantityDisplay');
+        if (totalEl) {
+            totalEl.innerHTML = `<span style="font-size: 24px;">${partsPerInspector}</span><span style="font-size: 14px; color: #64748b; margin-left: 5px;">/ ${state.currentInspection.quantity}</span>`;
+        }
+    }
+}
+
+async function createInspectionDatabaseEntry() {
+    // Get BatchNummer from TBK + Container combination
+    const batchNummer = getBatchNumber(
+        state.currentInspection.articleNumber,
+        state.currentInspection.containerNumber
+    );
+
+    if (!batchNummer) {
+        console.error("Batch not found in database");
+        return;
+    }
+
+    // Calculate Prüfungsnummer (count inspections for this batch + 1)
+    const inspectionsForBatch = getInspectionDatabaseAsArray().filter(
+        entry => entry.batchNummer === batchNummer
+    );
+    const pruefungsNummer = inspectionsForBatch.length + 1;
+
+    // Determine inspection type: M (Maß), L (Lehre), or S (Sicht)
+    let inspektion = 'L';
+    if (state.currentInspection.inspectionType === 'mass') inspektion = 'M';
+    else if (state.currentInspection.inspectionType === 'sicht') inspektion = 'S';
+
+    // Create unique key for this inspection (batchNummer-pruefungsNummer)
+    const inspectionKey = `${batchNummer}-${pruefungsNummer}`;
+
+    // Create entry with ALL fields initialized (even if null)
+    const entry = {
+        pruefungsNummer: pruefungsNummer,
+        batchNummer: batchNummer,
+        inspektion: inspektion,
+        total: state.currentInspection.quantity,
+        io: null,  // Will be filled when inspection completes
+        nio: null, // Will be filled when inspection completes
+        defects: {}, // Defects tracking
+        pruefer: state.personnelNumber,
+        activeInspectors: [state.personnelNumber], // Track all active inspectors
+        start: new Date().toLocaleString('de-DE', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        }),
+        ende: null // Will be filled when inspection completes
+    };
+
+    // Save with the unique key (batchNummer-pruefungsNummer)
+    await addInspection(inspectionKey, entry);
+
+    // Store reference to this entry for later updates
+    state.currentInspection.inspectionDbId = inspectionKey;
+    console.log('✅ Inspection entry created:', inspectionKey);
+
+    // Setup real-time listener for this inspection too
+    setupInspectionListener(inspectionKey);
+}
+
+async function updateInspectionDatabaseEntry() {
+    if (state.currentInspection.inspectionDbId === null) return;
+
+    // Calculate IO and NIO
+    const nio = state.currentInspection.totalDefects;
+    const io = state.currentInspection.quantity - nio;
+
+    const updates = {
+        io: io,
+        nio: nio,
+        ende: new Date().toLocaleString('de-DE', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        })
+    };
+
+    await updateInspection(state.currentInspection.inspectionDbId, updates);
+}
+
+async function deleteCurrentInspectionDatabaseEntry() {
+    if (state.currentInspection.inspectionDbId === null) return;
+
+    // Delete entry from Firebase
+    const { deleteData } = await import('./firebase.js');
+    await deleteData(`inspectionDatabase/${state.currentInspection.inspectionDbId}`);
+    state.currentInspection.inspectionDbId = null;
+
+    // Note: Prüfungsnummern recalculation is not needed with Firebase
+    // as we use unique keys (batchNummer-pruefungsNummer)
+}
+
+// Quantity Input with Numpad
+let quantityNumberInput = '';
+
+function showManualQuantity() {
+    quantityNumberInput = '';
+
+    // Get remaining capacity info
+    const remainingCapacity = state.currentInspection.remainingCapacity ||
+                             state.partTypeStandards.Housing.containerCapacity;
+    const containerCapacity = state.partTypeStandards.Housing.containerCapacity;
+    const isPartialContainer = remainingCapacity < containerCapacity;
+
+    let capacityInfo = '';
+    if (isPartialContainer) {
+        capacityInfo = `<p style="text-align: center; color: #f59e0b; font-size: 14px; margin-top: -10px; margin-bottom: 15px;">⚠️ Verbleibende Kapazität: ${remainingCapacity} Teile</p>`;
+    }
+
+    const content = document.getElementById('contentArea');
+    content.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: center; height: 100%; padding: 20px;">
+            <div style="max-width: 500px; width: 100%;">
+                <h2 style="text-align: center; margin-bottom: 25px; color: #1a202c; font-size: 24px;">${t('quantity')}</h2>
+                ${capacityInfo}
+
+                <div class="number-input-display" id="quantityDisplay">
+                    <div class="number-input-label">Anzahl Teile (max. ${remainingCapacity})</div>
+                    <div class="number-input-value empty" id="quantityValue">0</div>
+                </div>
+
+                <div class="numpad">
+                    <button class="numpad-btn" onclick="addQuantityDigit('1')">1</button>
+                    <button class="numpad-btn" onclick="addQuantityDigit('2')">2</button>
+                    <button class="numpad-btn" onclick="addQuantityDigit('3')">3</button>
+                    <button class="numpad-btn" onclick="addQuantityDigit('4')">4</button>
+                    <button class="numpad-btn" onclick="addQuantityDigit('5')">5</button>
+                    <button class="numpad-btn" onclick="addQuantityDigit('6')">6</button>
+                    <button class="numpad-btn" onclick="addQuantityDigit('7')">7</button>
+                    <button class="numpad-btn" onclick="addQuantityDigit('8')">8</button>
+                    <button class="numpad-btn" onclick="addQuantityDigit('9')">9</button>
+                    <button class="numpad-btn special" onclick="clearQuantityNumber()">⌫</button>
+                    <button class="numpad-btn" onclick="addQuantityDigit('0')">0</button>
+                    <button class="numpad-btn" onclick="submitManualQuantity()" style="background: linear-gradient(135deg, #10b981, #059669); color: white; border: none;">✓</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    updateQuantityDisplay();
+}
+
+function addQuantityDigit(digit) {
+    if (quantityNumberInput.length < 3) {
+        quantityNumberInput += digit;
+        updateQuantityDisplay();
+
+        // Vibration feedback
+        if ('vibrate' in navigator) {
+            navigator.vibrate(50);
+        }
+    }
+}
+
+function clearQuantityNumber() {
+    if (quantityNumberInput.length > 0) {
+        quantityNumberInput = quantityNumberInput.slice(0, -1);
+        updateQuantityDisplay();
+
+        // Vibration feedback
+        if ('vibrate' in navigator) {
+            navigator.vibrate(50);
+        }
+    }
+}
+
+function updateQuantityDisplay() {
+    const display = document.getElementById('quantityDisplay');
+    const valueEl = document.getElementById('quantityValue');
+
+    if (!valueEl) return;
+
+    if (quantityNumberInput.length === 0) {
+        valueEl.innerHTML = '0';
+        valueEl.classList.add('empty');
+        display.classList.remove('active');
+    } else {
+        // Build display with animation for each digit
+        let displayValue = '';
+        for (let i = 0; i < quantityNumberInput.length; i++) {
+            displayValue += `<span class="digit">${quantityNumberInput[i]}</span>`;
+        }
+        valueEl.innerHTML = displayValue;
+        valueEl.classList.remove('empty');
+        display.classList.add('active');
+    }
+}
+
+function submitManualQuantity() {
+    const qty = parseInt(quantityNumberInput);
+
+    // Get remaining capacity for this container
+    const remainingCapacity = state.currentInspection.remainingCapacity ||
+                             state.partTypeStandards.Housing.containerCapacity;
+
+    if (qty > 0 && qty <= remainingCapacity) {
+        // Vibration feedback
+        if ('vibrate' in navigator) {
+            navigator.vibrate(200);
+        }
+        setQuantity(qty);
+    } else if (quantityNumberInput.length === 0) {
+        // Go back if no input
+        goBack();
+    } else if (qty > remainingCapacity) {
+        // Show error if exceeds remaining capacity
+        showModal({
+            title: 'Kapazität überschritten',
+            content: `<p>Die eingegebene Menge (${qty} Teile) überschreitet die verbleibende Kapazität dieses Behälters (${remainingCapacity} Teile).</p>`,
+            buttons: [
+                { text: 'OK', action: closeModal }
+            ]
+        });
+    } else {
+        // Shake animation if invalid
+        const display = document.getElementById('quantityDisplay');
+        display.style.animation = 'none';
+        setTimeout(() => {
+            display.style.animation = 'shake 0.5s';
+        }, 10);
+    }
+}
+
+// Inspection Interface
+function showInspectionInterface() {
+    addToHistory(showQuantitySelection);
+    const type = state.currentInspection.inspectionType;
+
+    // Get actual inspectors who worked on this container from database
+    const inspectors = getPreviousInspectors();
+
+    // Store inspectors in state for modal
+    state.currentInspection.otherInspectors = inspectors;
+
+    // Get CURRENT active inspectors from Firebase (real-time)
+    let activeInspectorsDisplay = '';
+    let activeInspectorsLabel = 'Aktive Prüfer';
+
+    if (state.currentInspection.inspectionDbId) {
+        // Get active inspectors from current inspection
+        getInspection(state.currentInspection.inspectionDbId).then(inspection => {
+            console.log('📊 Loading active inspectors from inspection:', inspection);
+            if (inspection && inspection.activeInspectors) {
+                console.log('📊 Active inspectors found:', inspection.activeInspectors);
+                // Force update after a short delay to ensure DOM is ready
+                setTimeout(() => {
+                    updateActiveInspectorsDisplay(inspection.activeInspectors);
+                }, 100);
+            } else {
+                console.log('📊 No active inspectors data found');
+            }
+        }).catch(err => {
+            console.error('❌ Error loading inspection:', err);
+        });
+
+        activeInspectorsDisplay = '<span style="color: #94a3b8; font-size: 18px;">Lädt...</span>';
+    } else {
+        activeInspectorsDisplay = '<span style="color: #94a3b8; font-size: 18px;">Nur du</span>';
+    }
+
+    // Determine what to show in the PREVIOUS inspectors info card
+    let otherInspectorLabel = '';
+    let otherInspectorDisplay = '';
+
+    if (inspectors.length === 0) {
+        otherInspectorLabel = 'Vorherige Prüfer';
+        otherInspectorDisplay = '<span style="color: #94a3b8; font-size: 18px;">Keine</span>';
+    } else if (inspectors.length === 1) {
+        // Single inspector - show type and inspection number
+        const inspector = inspectors[0];
+        otherInspectorLabel = t('inspector') + ` (${inspector.typeLabel})`;
+
+        const statusClass = inspector.status === 'active' ? 'status-active' : 'status-finished';
+
+        otherInspectorDisplay = `
+            <span class="status-indicator ${statusClass}"></span>
+            ${inspector.typeLabel} - Prüf. ${inspector.pruefungsNummer}
+        `;
+    } else {
+        // Multiple inspectors - show generic label
+        otherInspectorLabel = 'Vorherige Prüfer';
+
+        // Get the latest status (if any active, show active)
+        const hasActive = inspectors.some(insp => insp.status === 'active');
+        const statusClass = hasActive ? 'status-active' : 'status-finished';
+
+        otherInspectorDisplay = `
+            <span class="status-indicator ${statusClass}"></span>
+            ${inspectors.length} Prüfer
+        `;
+    }
+
+    // Get defect types from standards based on inspection type
+    const defectTypes = state.partTypeStandards.Housing.defectTypes[type];
+
+    const content = document.getElementById('contentArea');
+    content.innerHTML = `
+        <div class="inspection-container">
+            <div class="info-row" style="grid-template-columns: repeat(5, 1fr);">
+                <div class="info-card animate-slide-up stagger-1">
+                    <h3>Artikel</h3>
+                    <p>Housing</p>
+                </div>
+                <div class="info-card animate-slide-up stagger-2">
+                    <h3>${t('totalQuantity')}</h3>
+                    <p id="totalQuantityDisplay">${state.currentInspection.quantity}</p>
+                </div>
+                <div class="info-card animate-slide-up stagger-3">
+                    <h3>${t('defectCount')}</h3>
+                    <p id="totalDefects">0</p>
+                </div>
+                <div class="info-card animate-slide-up stagger-4">
+                    <h3>${activeInspectorsLabel}</h3>
+                    <p class="inspector-status" id="activeInspectorsDisplay">
+                        ${activeInspectorsDisplay}
+                    </p>
+                </div>
+                <div class="info-card animate-slide-up stagger-5" style="cursor: ${inspectors.length > 0 ? 'pointer' : 'default'};" ${inspectors.length > 0 ? 'onclick="showInspectorModal()"' : ''}>
+                    <h3>${otherInspectorLabel}</h3>
+                    <p class="inspector-status">
+                        ${otherInspectorDisplay}
+                    </p>
+                </div>
+            </div>
+
+            <div class="defect-grid">
+                ${defectTypes.map((defect, i) => `
+                    <button class="defect-btn animate-scale stagger-${(i % 4) + 1}"
+                            onclick="registerDefect('${defect}', event)">
+                        <span class="defect-counter" id="counter-${i}">0</span>
+                        <h3>${defect}</h3>
+                    </button>
+                `).join('')}
+            </div>
+
+            <div class="action-row">
+                <button class="action-btn btn-complete animate-slide-up stagger-2" onclick="completeInspection()">${t('inspectionComplete')}</button>
+                <button class="action-btn btn-reset animate-slide-up stagger-3" onclick="resetInspection()">${t('resetInspection')}</button>
+                <button class="action-btn btn-next animate-slide-up stagger-4" onclick="nextInspection()">${t('nextInspection')}</button>
+            </div>
+        </div>
+    `;
+}
+
+// Get previous inspectors from database
+function getPreviousInspectors() {
+    const batchNummer = getBatchNumber(
+        state.currentInspection.articleNumber,
+        state.currentInspection.containerNumber
+    );
+
+    if (!batchNummer) return [];
+
+    const sequence = state.partTypeStandards.Housing.inspectionSequence;
+    const typeToCode = { 'lehre': 'L', 'mass': 'M', 'sicht': 'S' };
+    const codeToLabel = { 'L': 'Lehre', 'M': 'Maß', 'S': 'Sicht' };
+    const currentType = state.currentInspection.inspectionType;
+
+    // Find current step index
+    let currentStepIndex = -1;
+    for (let i = 0; i < sequence.length; i++) {
+        if (sequence[i].includes(currentType)) {
+            currentStepIndex = i;
+            break;
+        }
+    }
+
+    if (currentStepIndex === -1) return [];
+
+    const inspectors = [];
+    const avatarMap = {}; // Map personnel numbers to consistent avatars
+    const avatars = ['👨‍🔧', '👩‍🔧', '👨‍💼', '👩‍💼', '🧑‍🔧'];
+    let avatarIndex = 0;
+
+    // Go through all previous steps and collect unique inspectors
+    for (let stepIndex = 0; stepIndex < currentStepIndex; stepIndex++) {
+        const inspectionsInStep = sequence[stepIndex];
+
+        for (const inspType of inspectionsInStep) {
+            const inspCode = typeToCode[inspType];
+
+            // Get all inspections of this type for this batch (use array version)
+            const batchInspections = getInspectionDatabaseAsArray().filter(
+                entry => entry.batchNummer === batchNummer &&
+                         entry.inspektion === inspCode
+            );
+
+            // Collect ALL inspectors (not just unique ones)
+            batchInspections.forEach(entry => {
+                const pruefer = entry.pruefer;
+
+                // Assign consistent avatar
+                if (!avatarMap[pruefer]) {
+                    avatarMap[pruefer] = avatars[avatarIndex % avatars.length];
+                    avatarIndex++;
+                }
+
+                // Determine status (finished if inspection has ende, active if not)
+                const status = entry.ende ? 'finished' : 'active';
+
+                inspectors.push({
+                    name: `P-${pruefer}`,
+                    avatar: avatarMap[pruefer],
+                    status: status,
+                    type: inspType,
+                    typeLabel: codeToLabel[inspCode],
+                    pruefungsNummer: entry.pruefungsNummer
+                });
+            });
+        }
+    }
+
+    return inspectors;
+}
+
+// Show Inspector Modal
+function showInspectorModal() {
+    const inspectors = state.currentInspection.otherInspectors || [];
+
+    if (inspectors.length === 0) return;
+
+    const avatarsHtml = inspectors.map(insp =>
+        `<div class="inspector-avatar-large">${insp.avatar}</div>`
+    ).join('');
+
+    const inspectorCards = inspectors.map(insp => `
+        <div class="inspector-info-item animate-slide-up">
+            <h4>Prüfer</h4>
+            <p>${insp.name}</p>
+        </div>
+        <div class="inspector-info-item animate-slide-up">
+            <h4>Prüfung</h4>
+            <p>${insp.typeLabel} - Prüf. ${insp.pruefungsNummer}</p>
+        </div>
+        <div class="inspector-info-item animate-slide-up">
+            <h4>Status</h4>
+            <p>
+                <span class="inspector-status-badge ${insp.status}">
+                    <span class="status-dot"></span>
+                    ${insp.status === 'active' ? t('active') : t('finished')}
+                </span>
+            </p>
+        </div>
+    `).join('');
+
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'inspectorModal';
+    modal.onclick = (e) => {
+        if (e.target === modal) closeInspectorModal();
+    };
+
+    modal.innerHTML = `
+        <div class="inspector-modal">
+            <div class="inspector-header">
+                <div class="inspector-avatars">
+                    ${avatarsHtml}
+                </div>
+                <h2>Bisherige Prüfungen</h2>
+                <p>TBK ${state.currentInspection.articleNumber} • Artikel Housing</p>
+            </div>
+            <div class="inspector-body">
+                <div class="inspector-info-grid">
+                    ${inspectorCards}
+                </div>
+                <button class="btn-primary" onclick="closeInspectorModal()">Schließen</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+}
+
+function closeInspectorModal() {
+    const modal = document.getElementById('inspectorModal');
+    if (modal) {
+        modal.remove();
+    }
+}
+
+async function registerDefect(type, event) {
+    const button = event.currentTarget;
+
+    // Prevent multiple clicks during animation
+    if (button.classList.contains('clicked')) {
+        return;
+    }
+
+    // Add click animation
+    button.classList.add('clicked');
+
+    // Register the defect
+    if (!state.currentInspection.defects[type]) {
+        state.currentInspection.defects[type] = 0;
+    }
+    state.currentInspection.defects[type]++;
+    state.currentInspection.totalDefects++;
+
+    // Update UI
+    updateDefectCounters();
+
+    // Sync defects to Firebase in real-time
+    if (state.currentInspection.inspectionDbId) {
+        await updateInspection(state.currentInspection.inspectionDbId, {
+            defects: state.currentInspection.defects,
+            nio: state.currentInspection.totalDefects
+        });
+    }
+
+    // Remove class after animation
+    setTimeout(() => {
+        button.classList.remove('clicked');
+    }, 250);
+}
+
+function updateDefectCounters() {
+    // Get defect types from standards based on current inspection type
+    const defectTypes = state.partTypeStandards.Housing.defectTypes[state.currentInspection.inspectionType];
+
+    defectTypes.forEach((type, i) => {
+        const counter = document.getElementById(`counter-${i}`);
+        if (counter) {
+            const oldValue = parseInt(counter.textContent);
+            const newValue = state.currentInspection.defects[type] || 0;
+
+            if (newValue !== oldValue) {
+                counter.style.animation = 'none';
+                setTimeout(() => {
+                    counter.style.animation = 'countPulse 0.4s ease-out';
+                    counter.textContent = newValue;
+                }, 10);
+            }
+        }
+    });
+
+    const totalElement = document.getElementById('totalDefects');
+    const oldTotal = parseInt(totalElement.textContent);
+    if (state.currentInspection.totalDefects !== oldTotal) {
+        totalElement.style.animation = 'none';
+        setTimeout(() => {
+            totalElement.style.animation = 'countPulse 0.4s ease-out';
+            totalElement.textContent = state.currentInspection.totalDefects;
+        }, 10);
+    }
+}
+
+// Complete Inspection
+async function completeInspection() {
+    const good = state.currentInspection.quantity - state.currentInspection.totalDefects;
+    const bad = state.currentInspection.totalDefects;
+
+    // Update inspection database entry with IO, NIO, and end time
+    await updateInspectionDatabaseEntry();
+
+    showModal({
+        title: t('inspectionComplete'),
+        content: `
+            <p><strong>Gut:</strong> ${good} Teile</p>
+            <p><strong>Schlecht:</strong> ${bad} Teile</p>
+            <p style="margin-top: 20px;">Ergebnisse werden gespeichert...</p>
+        `,
+        buttons: [
+            { text: t('confirm'), action: () => { closeModal(); showMainMenu(); } }
+        ]
+    });
+}
+
+// Reset Inspection
+function resetInspection() {
+    showModal({
+        title: 'Warnung',
+        content: '<p>Möchten Sie die aktuelle Prüfung wirklich zurücksetzen? Alle Daten gehen verloren.</p>',
+        buttons: [
+            { text: 'Abbrechen', action: closeModal },
+            { text: 'Zurücksetzen', action: async () => {
+                // Delete current inspection from database
+                await deleteCurrentInspectionDatabaseEntry();
+                closeModal();
+                showMainMenu();
+            }}
+        ]
+    });
+}
+
+// Next Inspection
+function nextInspection() {
+    const good = state.currentInspection.quantity - state.currentInspection.totalDefects;
+    const bad = state.currentInspection.totalDefects;
+
+    showModal({
+        title: t('nextInspection'),
+        content: `
+            <p><strong>Gut:</strong> ${good} Teile</p>
+            <p><strong>Schlecht:</strong> ${bad} Teile</p>
+            <p style="margin-top: 20px; color: #27ae60;">✓ Ergebnisse gespeichert</p>
+            <p style="margin-top: 20px;">Was möchten Sie als nächstes tun?</p>
+        `,
+        buttons: [
+            { text: 'Neue Teilebegleitkarte', action: () => { closeModal(); showSerieMenu(); } },
+            { text: 'Neuer Behälter', action: () => { closeModal(); showQuantitySelection(); } }
+        ]
+    });
+}
+
+// Modal System
+function showModal(config) {
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'activeModal';
+
+    const buttonsHtml = config.buttons.map((btn, index) =>
+        `<button class="btn-secondary" onclick="executeModalAction(${index})">${btn.text}</button>`
+    ).join('');
+
+    modal.innerHTML = `
+        <div class="modal-content">
+            <h2>${config.title}</h2>
+            ${config.content}
+            <div class="modal-buttons">
+                ${buttonsHtml}
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    // Store actions in a temporary array
+    window.currentModalActions = config.buttons.map(btn => btn.action);
+}
+
+function executeModalAction(index) {
+    if (window.currentModalActions && window.currentModalActions[index]) {
+        window.currentModalActions[index]();
+    }
+}
+
+function closeModal() {
+    const modal = document.getElementById('activeModal');
+    if (modal) {
+        modal.remove();
+    }
+}
+
+// Feature Modals
+function showFeatureNotAvailable() {
+    showModal({
+        title: t('featureNotAvailable'),
+        content: '<p>Diese Funktion ist derzeit nicht verfügbar.</p>',
+        buttons: [
+            { text: 'OK', action: closeModal }
+        ]
+    });
+}
+
+function showFeatureInProgress() {
+    showModal({
+        title: t('featureInProgress'),
+        content: '<p>Diese Funktion ist aktuell in Entwicklung.</p>',
+        buttons: [
+            { text: 'OK', action: closeModal }
+        ]
+    });
+}
+
+// Notification System
+function showNotification(title, message, type = 'info', duration = 4000) {
+    const notification = document.createElement('div');
+    
+    // Color scheme based on type
+    const colors = {
+        success: 'linear-gradient(135deg, #10b981, #059669)',
+        info: 'linear-gradient(135deg, #3b82f6, #2563eb)',
+        warning: 'linear-gradient(135deg, #f59e0b, #d97706)',
+        error: 'linear-gradient(135deg, #ef4444, #dc2626)'
+    };
+    
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: ${colors[type] || colors.info};
+        color: white;
+        padding: 20px 30px;
+        border-radius: 12px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        z-index: 3000;
+        font-size: 16px;
+        font-weight: 600;
+        animation: slideInRight 0.4s ease-out;
+        max-width: 400px;
+    `;
+    
+    notification.innerHTML = `
+        <div style="font-size: 18px; margin-bottom: 5px;">${title}</div>
+        <div style="font-size: 14px; font-weight: 400; opacity: 0.95;">${message}</div>
+    `;
+    
+    document.body.appendChild(notification);
+
+    // Remove after duration
+    setTimeout(() => {
+        notification.style.animation = 'fadeOut 0.3s ease-out';
+        setTimeout(() => notification.remove(), 300);
+    }, duration);
+}
+
+// Barcode Scanner
+let html5QrcodeScanner = null;
+let scanInProgress = false;
+
+function openBarcodeScanner() {
+    scanInProgress = false;
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'scannerModal';
+    modal.onclick = (e) => {
+        if (e.target === modal) closeBarcodeScanner();
+    };
+
+    modal.innerHTML = `
+        <div class="scanner-modal">
+            <div class="scanner-header">
+                <h2>Barcode Scanner</h2>
+                <button class="scanner-close-btn" onclick="closeBarcodeScanner()">×</button>
+            </div>
+            <div class="scanner-body">
+                <div id="reader"></div>
+                <div class="scanner-status" id="scannerStatus">
+                    <p class="scanner-status-text">Richte die Kamera auf einen Barcode...</p>
+                </div>
+                <div class="scanner-fallback">
+                    <p class="scanner-fallback-text">oder gib den Code manuell ein:</p>
+                    <input
+                        type="text"
+                        id="manualBarcodeInput"
+                        placeholder="Barcode eingeben"
+                        onkeypress="if(event.key === 'Enter') submitManualBarcode()"
+                    />
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+    startBarcodeScanner();
+}
+
+function startBarcodeScanner() {
+    const config = {
+        fps: 20, // Increased from 10 for faster scanning
+        qrbox: { width: 400, height: 150 }, // Wider and flatter for barcodes
+        // Support all common barcode formats
+        formatsToSupport: [
+            Html5QrcodeSupportedFormats.QR_CODE,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E
+        ],
+        rememberLastUsedCamera: true,
+        aspectRatio: 1.777778 // 16:9 aspect ratio for better barcode scanning
+    };
+
+    html5QrcodeScanner = new Html5Qrcode("reader");
+
+    // Try to get rear camera on mobile devices
+    html5QrcodeScanner.start(
+        { facingMode: "environment" },
+        config,
+        onScanSuccess,
+        onScanError
+    ).catch(err => {
+        console.error("Camera start error:", err);
+        const status = document.getElementById('scannerStatus');
+        if (status) {
+            status.className = 'scanner-status error';
+            status.innerHTML = `
+                <p class="scanner-status-text">⚠️ Kamera-Zugriff verweigert oder nicht verfügbar</p>
+                <p style="font-size: 13px; margin-top: 10px; font-weight: normal;">Bitte verwende die manuelle Eingabe unten.</p>
+            `;
+        }
+        // Auto-focus manual input
+        setTimeout(() => {
+            const input = document.getElementById('manualBarcodeInput');
+            if (input) input.focus();
+        }, 300);
+    });
+}
+
+function onScanSuccess(decodedText, decodedResult) {
+    // Prevent multiple scans
+    if (scanInProgress) {
+        return;
+    }
+    scanInProgress = true;
+
+    // Vibration feedback
+    if ('vibrate' in navigator) {
+        navigator.vibrate(200);
+    }
+
+    const status = document.getElementById('scannerStatus');
+    if (status) {
+        status.className = 'scanner-status success';
+        status.innerHTML = `
+            <p class="scanner-status-text">✓ Erfolgreich gescannt!</p>
+            <div class="scanner-result">${decodedText}</div>
+        `;
+    }
+
+    // Process the scanned code immediately - show brief success message
+    setTimeout(() => {
+        processBarcodeResult(decodedText);
+    }, 500);
+}
+
+function onScanError(errorMessage) {
+    // Silently ignore scan errors (happens continuously while scanning)
+}
+
+function submitManualBarcode() {
+    const input = document.getElementById('manualBarcodeInput');
+    const barcode = input.value.trim();
+
+    if (barcode.length > 0) {
+        // Vibration feedback
+        if ('vibrate' in navigator) {
+            navigator.vibrate(200);
+        }
+
+        const status = document.getElementById('scannerStatus');
+        if (status) {
+            status.className = 'scanner-status success';
+            status.innerHTML = `
+                <p class="scanner-status-text">✓ Manuell eingegeben!</p>
+                <div class="scanner-result">${barcode}</div>
+            `;
+        }
+
+        setTimeout(() => {
+            processBarcodeResult(barcode);
+        }, 1000);
+    }
+}
+
+function processBarcodeResult(barcode) {
+    // Stop and clean up scanner first
+    if (html5QrcodeScanner) {
+        html5QrcodeScanner.stop().then(() => {
+            html5QrcodeScanner.clear();
+            html5QrcodeScanner = null;
+        }).catch(err => {
+            console.error("Error stopping scanner:", err);
+            html5QrcodeScanner = null;
+        });
+    }
+
+    // Remove modal
+    const modal = document.getElementById('scannerModal');
+    if (modal) {
+        modal.remove();
+    }
+
+    // Save the scanned barcode as TBK number
+    state.currentInspection.articleNumber = barcode;
+    state.currentInspection.tz = Math.floor(Math.random() * 11);
+
+    // Show confirmation page (container number will be entered next)
+    showScanConfirmation();
+}
+
+// TBK Database Functions
+async function addTbkToDatabase(tbkNummer, containerNumber) {
+    // Check if this TBK + Container combination already exists (use array version)
+    const exists = getTBKDatabaseAsArray().some(entry =>
+        entry.tbkNummer === tbkNummer && entry.containerNumber === containerNumber
+    );
+
+    if (!exists) {
+        // Generate random 6-digit Laufkarte and 8-digit Chargenr
+        const laufkarte = Math.floor(100000 + Math.random() * 900000).toString();
+        const chargenr = Math.floor(10000000 + Math.random() * 90000000).toString();
+
+        // Calculate next batchNummer
+        const currentEntries = getTBKDatabaseAsArray();
+        const batchNummer = currentEntries.length + 1;
+
+        // Add new entry - unique batchNummer for each TBK + Container combination
+        const entry = {
+            batchNummer: batchNummer,
+            tbkNummer: tbkNummer,
+            containerNumber: containerNumber,
+            laufkarte: laufkarte,
+            chargenr: chargenr
+        };
+
+        await addTBKEntry(entry);
+    }
+}
+
+function getBatchNumber(tbkNummer, containerNumber) {
+    // Find the batch for this specific TBK + Container combination (use array version)
+    const entry = getTBKDatabaseAsArray().find(e =>
+        e.tbkNummer === tbkNummer && e.containerNumber === containerNumber
+    );
+    return entry ? entry.batchNummer : null;
+}
+
+function openDatabase() {
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'databaseModal';
+    modal.onclick = (e) => {
+        if (e.target === modal) closeDatabase();
+    };
+
+    // TBK Database Table (use array version)
+    const tbkDatabaseArray = getTBKDatabaseAsArray();
+    let tbkTableContent = '';
+    if (tbkDatabaseArray.length === 0) {
+        tbkTableContent = `
+            <div class="database-empty">
+                <div class="database-empty-icon">🗄️</div>
+                <div class="database-empty-text">Keine TBK-Daten vorhanden</div>
+                <div class="database-empty-subtext">Scanne eine TBK, um Einträge zu erstellen</div>
+            </div>
+        `;
+    } else {
+        const rows = tbkDatabaseArray.map(entry => `
+            <tr>
+                <td>${entry.batchNummer}</td>
+                <td>${entry.tbkNummer}</td>
+                <td>${entry.containerNumber}</td>
+                <td>${entry.laufkarte}</td>
+                <td>${entry.chargenr}</td>
+            </tr>
+        `).join('');
+
+        tbkTableContent = `
+            <h3 style="margin-bottom: 20px; color: #1a202c; font-size: 20px;">TBK Datenbank</h3>
+            <table class="database-table">
+                <thead>
+                    <tr>
+                        <th>BatchNummer</th>
+                        <th>TBK Nummer</th>
+                        <th>Behälter</th>
+                        <th>Laufkarte</th>
+                        <th>ChargenNr</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows}
+                </tbody>
+            </table>
+        `;
+    }
+
+    // Inspection Database Table (use array version)
+    const inspectionDatabaseArray = getInspectionDatabaseAsArray();
+    let inspectionTableContent = '';
+    if (inspectionDatabaseArray.length === 0) {
+        inspectionTableContent = `
+            <div class="database-empty" style="margin-top: 40px;">
+                <div class="database-empty-icon">📋</div>
+                <div class="database-empty-text">Keine Prüfungen vorhanden</div>
+                <div class="database-empty-subtext">Führe eine Prüfung durch, um Einträge zu erstellen</div>
+            </div>
+        `;
+    } else {
+        const rows = inspectionDatabaseArray.map(entry => `
+            <tr>
+                <td>${entry.pruefungsNummer}</td>
+                <td>${entry.batchNummer}</td>
+                <td>${entry.inspektion}</td>
+                <td>${entry.total}</td>
+                <td>${entry.io !== null ? entry.io : '-'}</td>
+                <td>${entry.nio !== null ? entry.nio : '-'}</td>
+                <td>${entry.pruefer}</td>
+                <td>${entry.start}</td>
+                <td>${entry.ende || '-'}</td>
+            </tr>
+        `).join('');
+
+        inspectionTableContent = `
+            <h3 style="margin: 40px 0 20px 0; color: #1a202c; font-size: 20px;">Prüfungsdatenbank</h3>
+            <table class="database-table">
+                <thead>
+                    <tr>
+                        <th>Prüfungs-Nr</th>
+                        <th>Batch-Nr</th>
+                        <th>Inspektion</th>
+                        <th>Total</th>
+                        <th>IO</th>
+                        <th>NIO</th>
+                        <th>Prüfer</th>
+                        <th>Start</th>
+                        <th>Ende</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows}
+                </tbody>
+            </table>
+        `;
+    }
+
+    modal.innerHTML = `
+        <div class="database-modal">
+            <div class="database-header">
+                <h2>🗄️ Datenbanken</h2>
+                <button class="database-close-btn" onclick="closeDatabase()">×</button>
+            </div>
+            <div class="database-body">
+                ${tbkTableContent}
+                ${inspectionTableContent}
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+}
+
+function closeDatabase() {
+    const modal = document.getElementById('databaseModal');
+    if (modal) {
+        modal.remove();
+    }
+}
+
+function closeBarcodeScanner() {
+    // Manual close (X button or click outside)
+    if (html5QrcodeScanner) {
+        html5QrcodeScanner.stop().then(() => {
+            html5QrcodeScanner.clear();
+            html5QrcodeScanner = null;
+        }).catch(err => {
+            console.error("Error stopping scanner:", err);
+            html5QrcodeScanner = null;
+        });
+    }
+
+    const modal = document.getElementById('scannerModal');
+    if (modal) {
+        modal.remove();
+    }
+
+    scanInProgress = false;
+}
+
+// Standards Editor
+function openStandards() {
+    const standards = state.partTypeStandards.Housing;
+
+    // Create defect tags for each inspection type
+    const createDefectSection = (type, label) => {
+        const defects = standards.defectTypes[type];
+        const defectTagsHtml = defects.map((defect, index) => `
+            <div class="defect-tag">
+                ${defect}
+                <button class="defect-tag-remove" onclick="removeDefectType('${type}', ${index})">×</button>
+            </div>
+        `).join('');
+
+        return `
+            <div class="standards-section">
+                <h3>Fehlermerkmale - ${label}</h3>
+                <div class="defect-tags" id="defectTags-${type}">
+                    ${defectTagsHtml}
+                </div>
+                <input
+                    type="text"
+                    class="standards-input"
+                    id="newDefectInput-${type}"
+                    placeholder="Neues Fehlermerkmal für ${label} eingeben"
+                    onkeypress="if(event.key === 'Enter') addDefectType('${type}')"
+                />
+                <button class="add-defect-btn" onclick="addDefectType('${type}')">+ Fehlermerkmal hinzufügen</button>
+            </div>
+        `;
+    };
+
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'standardsModal';
+    modal.onclick = (e) => {
+        if (e.target === modal) closeStandards();
+    };
+
+    modal.innerHTML = `
+        <div class="database-modal">
+            <div class="database-header">
+                <h2>⚙️ Standards - Housing</h2>
+                <button class="database-close-btn" onclick="closeStandards()">×</button>
+            </div>
+            <div class="database-body">
+                <div class="standards-section">
+                    <h3>Behälterkapazität</h3>
+                    <input
+                        type="number"
+                        class="standards-input"
+                        id="containerCapacity"
+                        value="${standards.containerCapacity}"
+                        placeholder="Anzahl Teile pro Behälter"
+                        inputmode="numeric"
+                    />
+                </div>
+
+                ${createDefectSection('lehre', 'Lehre')}
+                ${createDefectSection('mass', 'Maß')}
+                ${createDefectSection('sicht', 'Sicht')}
+
+                <div class="standards-section">
+                    <h3>Inspektionsreihenfolge</h3>
+                    <div class="sequence-builder" id="sequenceBuilder">
+                        <div class="sequence-builder-title">🎯 Ziehe die Prüfungen in die Timeline (gleicher Schritt = parallel möglich)</div>
+                        <div class="available-inspections" id="availableInspections"></div>
+                        <div class="timeline" id="timeline"></div>
+                    </div>
+                </div>
+
+                <button class="btn-primary" style="width: 100%; margin-top: 30px;" onclick="saveStandards()">
+                    Speichern
+                </button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    // Initialize the drag-and-drop sequence builder
+    initializeSequenceBuilder();
+}
+
+function initializeSequenceBuilder() {
+    const availableContainer = document.getElementById('availableInspections');
+    const timelineContainer = document.getElementById('timeline');
+
+    // Get current sequence from state
+    const currentSequence = state.partTypeStandards.Housing.inspectionSequence;
+
+    // Define all inspection types
+    const allInspections = ['lehre', 'mass', 'sicht'];
+    const inspectionLabels = {
+        'lehre': 'Lehre',
+        'mass': 'Maß',
+        'sicht': 'Sicht'
+    };
+    const inspectionIcons = {
+        'lehre': '📏',
+        'mass': '📐',
+        'sicht': '👁️'
+    };
+
+    // Find which inspections are already in timeline
+    const usedInspections = new Set();
+    currentSequence.forEach(step => {
+        step.forEach(inspection => usedInspections.add(inspection));
+    });
+
+    // Render available inspections (not yet in timeline)
+    availableContainer.innerHTML = '<div class="sequence-builder-subtitle">Verfügbare Prüfungen:</div>';
+    let dropZoneContent = '';
+
+    if (usedInspections.size === 3) {
+        dropZoneContent = '<div style="text-align: center; color: #94a3b8; padding: 20px; font-style: italic;">Ziehe Prüfungen hierher, um sie zu deaktivieren</div>';
+    } else {
+        allInspections.forEach(type => {
+            if (!usedInspections.has(type)) {
+                dropZoneContent += createInspectionCard(type, inspectionLabels[type], inspectionIcons[type]);
+            }
+        });
+    }
+
+    availableContainer.innerHTML += `<div class="available-drop-zone" ondrop="handleDropToAvailable(event)" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)">${dropZoneContent}</div>`;
+
+    // Render timeline with current sequence - only show steps that exist + one empty (max 3 total)
+    timelineContainer.innerHTML = '<div class="sequence-builder-subtitle">Timeline (nacheinander):</div>';
+
+    // Determine how many steps to show (max 3)
+    const maxSteps = 3;
+    const numSteps = currentSequence.length > 0
+        ? Math.min(currentSequence.length + 1, maxSteps)
+        : 1;
+
+    for (let i = 0; i < numSteps; i++) {
+        const stepInspections = currentSequence[i] || [];
+        let stepContent = '';
+
+        if (stepInspections.length > 0) {
+            stepContent = stepInspections.map(type =>
+                createInspectionCard(type, inspectionLabels[type], inspectionIcons[type])
+            ).join('');
+        } else {
+            stepContent = '<div style="text-align: center; color: #94a3b8; padding: 10px; font-size: 13px;">Leer</div>';
+        }
+
+        timelineContainer.innerHTML += `
+            <div class="timeline-step" data-step="${i}" ondrop="handleDrop(event)" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)">
+                <div class="timeline-step-header">
+                    <span class="timeline-step-number">${i + 1}</span>
+                    Schritt ${i + 1}
+                </div>
+                <div class="timeline-drop-zone">
+                    ${stepContent}
+                </div>
+            </div>
+        `;
+    }
+
+    // If no inspections in timeline, show helper text
+    if (usedInspections.size === 0) {
+        timelineContainer.innerHTML += '<div style="text-align: center; color: #64748b; margin-top: 20px; font-style: italic;">Ziehe Prüfungen aus "Verfügbare Prüfungen" hierher</div>';
+    }
+}
+
+function createInspectionCard(type, label, icon) {
+    return `
+        <div class="inspection-card ${type}" draggable="true" data-type="${type}"
+             ondragstart="handleDragStart(event)" ondragend="handleDragEnd(event)"
+             ontouchstart="handleTouchStart(event)" ontouchmove="handleTouchMove(event)" ontouchend="handleTouchEnd(event)">
+            <span class="inspection-card-icon">${icon}</span>
+            <span class="inspection-card-label">${label}</span>
+        </div>
+    `;
+}
+
+let draggedElement = null;
+let draggedType = null;
+
+function handleDragStart(event) {
+    draggedElement = event.target.closest('.inspection-card');
+    draggedType = draggedElement.dataset.type;
+    draggedElement.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', draggedType);
+}
+
+function handleDragEnd(event) {
+    if (draggedElement) {
+        draggedElement.classList.remove('dragging');
+    }
+
+    // Remove drag-over styling from all steps
+    document.querySelectorAll('.timeline-step, .available-drop-zone').forEach(step => {
+        step.classList.remove('drag-over');
+    });
+}
+
+function handleDragOver(event) {
+    if (event.preventDefault) {
+        event.preventDefault();
+    }
+
+    const dropZone = event.target.closest('.timeline-step, .available-drop-zone');
+    if (dropZone) {
+        // Remove drag-over from all
+        document.querySelectorAll('.timeline-step, .available-drop-zone').forEach(el => {
+            el.classList.remove('drag-over');
+        });
+        // Add to current
+        dropZone.classList.add('drag-over');
+    }
+
+    event.dataTransfer.dropEffect = 'move';
+    return false;
+}
+
+function handleDragLeave(event) {
+    const step = event.target.closest('.timeline-step');
+    if (step && !step.contains(event.relatedTarget)) {
+        step.classList.remove('drag-over');
+    }
+}
+
+function handleDrop(event) {
+    if (event.stopPropagation) {
+        event.stopPropagation();
+    }
+    if (event.preventDefault) {
+        event.preventDefault();
+    }
+
+    const step = event.target.closest('.timeline-step');
+    if (!step || !draggedElement || !draggedType) return false;
+
+    const stepIndex = parseInt(step.dataset.step);
+
+    // Check if card is coming from available inspections or from another step
+    const parentDropZone = draggedElement.closest('.available-drop-zone');
+    const parentStep = draggedElement.closest('.timeline-step');
+
+    if (parentDropZone) {
+        // Add to timeline from available
+        addToTimelineStep(draggedType, stepIndex);
+    } else if (parentStep) {
+        // Move between steps
+        const oldStepIndex = parseInt(parentStep.dataset.step);
+        if (oldStepIndex !== stepIndex) {
+            removeFromTimelineStep(draggedType, oldStepIndex);
+            addToTimelineStep(draggedType, stepIndex);
+        }
+    }
+
+    // Refresh the builder UI
+    initializeSequenceBuilder();
+
+    return false;
+}
+
+function addToTimelineStep(inspectionType, stepIndex) {
+    const sequence = state.partTypeStandards.Housing.inspectionSequence;
+
+    // Ensure the step array exists
+    while (sequence.length <= stepIndex) {
+        sequence.push([]);
+    }
+
+    // Add inspection to step if not already there
+    if (!sequence[stepIndex].includes(inspectionType)) {
+        sequence[stepIndex].push(inspectionType);
+    }
+}
+
+function removeFromTimelineStep(inspectionType, stepIndex) {
+    const sequence = state.partTypeStandards.Housing.inspectionSequence;
+
+    if (sequence[stepIndex]) {
+        const index = sequence[stepIndex].indexOf(inspectionType);
+        if (index > -1) {
+            sequence[stepIndex].splice(index, 1);
+        }
+
+        // Remove empty steps from the end
+        while (sequence.length > 0 && sequence[sequence.length - 1].length === 0) {
+            sequence.pop();
+        }
+    }
+}
+
+function handleDropToAvailable(event) {
+    if (event.stopPropagation) {
+        event.stopPropagation();
+    }
+    if (event.preventDefault) {
+        event.preventDefault();
+    }
+
+    if (!draggedElement || !draggedType) return false;
+
+    // Check if card is from timeline
+    const parentStep = draggedElement.closest('.timeline-step');
+
+    if (parentStep) {
+        // Remove from timeline (disable inspection)
+        const stepIndex = parseInt(parentStep.dataset.step);
+        removeFromTimelineStep(draggedType, stepIndex);
+
+        // Refresh the builder UI
+        initializeSequenceBuilder();
+    }
+
+    return false;
+}
+
+// Touch event handling for mobile/tablet
+let touchStartX = 0;
+let touchStartY = 0;
+let touchElement = null;
+let clonedElement = null;
+
+function handleTouchStart(event) {
+    const touch = event.touches[0];
+    touchStartX = touch.clientX;
+    touchStartY = touch.clientY;
+
+    touchElement = event.currentTarget.closest('.inspection-card');
+    draggedElement = touchElement;
+    draggedType = touchElement.dataset.type;
+
+    // Prevent default to avoid text selection
+    event.preventDefault();
+
+    // Create a clone for visual feedback
+    clonedElement = touchElement.cloneNode(true);
+    clonedElement.style.position = 'fixed';
+    clonedElement.style.pointerEvents = 'none';
+    clonedElement.style.zIndex = '10000';
+    clonedElement.style.opacity = '0.9';
+    clonedElement.style.left = touch.clientX - (touchElement.offsetWidth / 2) + 'px';
+    clonedElement.style.top = touch.clientY - (touchElement.offsetHeight / 2) + 'px';
+    clonedElement.style.width = touchElement.offsetWidth + 'px';
+    clonedElement.style.boxShadow = '0 8px 24px rgba(0, 0, 0, 0.3)';
+    document.body.appendChild(clonedElement);
+
+    // Make original semi-transparent
+    touchElement.style.opacity = '0.3';
+}
+
+function handleTouchMove(event) {
+    if (!touchElement || !clonedElement) return;
+
+    event.preventDefault();
+
+    const touch = event.touches[0];
+
+    // Move the clone
+    clonedElement.style.left = touch.clientX - (touchElement.offsetWidth / 2) + 'px';
+    clonedElement.style.top = touch.clientY - (touchElement.offsetHeight / 2) + 'px';
+
+    // Check what element is underneath
+    clonedElement.style.display = 'none';
+    const elementBelow = document.elementFromPoint(touch.clientX, touch.clientY);
+    clonedElement.style.display = 'block';
+
+    // Remove all drag-over classes
+    document.querySelectorAll('.timeline-step, .available-drop-zone').forEach(el => {
+        el.classList.remove('drag-over');
+    });
+
+    // Add drag-over class to the element below
+    if (elementBelow) {
+        const dropZone = elementBelow.closest('.timeline-step, .available-drop-zone');
+        if (dropZone) {
+            dropZone.classList.add('drag-over');
+        }
+    }
+}
+
+function handleTouchEnd(event) {
+    if (!touchElement || !clonedElement) return;
+
+    event.preventDefault();
+
+    const touch = event.changedTouches[0];
+
+    // Find element at touch position
+    clonedElement.style.display = 'none';
+    const elementBelow = document.elementFromPoint(touch.clientX, touch.clientY);
+
+    // Restore original opacity
+    touchElement.style.opacity = '1';
+
+    // Remove clone
+    if (clonedElement && clonedElement.parentNode) {
+        clonedElement.parentNode.removeChild(clonedElement);
+    }
+    clonedElement = null;
+
+    // Remove all drag-over classes
+    document.querySelectorAll('.timeline-step, .available-drop-zone').forEach(el => {
+        el.classList.remove('drag-over');
+    });
+
+    // Handle drop
+    if (elementBelow) {
+        const timelineStep = elementBelow.closest('.timeline-step');
+        const availableZone = elementBelow.closest('.available-drop-zone');
+
+        if (timelineStep) {
+            // Dropped on timeline
+            const stepIndex = parseInt(timelineStep.dataset.step);
+            const parentDropZone = touchElement.closest('.available-drop-zone');
+            const parentStep = touchElement.closest('.timeline-step');
+
+            if (parentDropZone) {
+                addToTimelineStep(draggedType, stepIndex);
+            } else if (parentStep) {
+                const oldStepIndex = parseInt(parentStep.dataset.step);
+                if (oldStepIndex !== stepIndex) {
+                    removeFromTimelineStep(draggedType, oldStepIndex);
+                    addToTimelineStep(draggedType, stepIndex);
+                }
+            }
+
+            initializeSequenceBuilder();
+        } else if (availableZone) {
+            // Dropped on available zone
+            const parentStep = touchElement.closest('.timeline-step');
+
+            if (parentStep) {
+                const stepIndex = parseInt(parentStep.dataset.step);
+                removeFromTimelineStep(draggedType, stepIndex);
+                initializeSequenceBuilder();
+            }
+        }
+    }
+
+    touchElement = null;
+    draggedElement = null;
+    draggedType = null;
+}
+
+async function addDefectType(inspectionType) {
+    const input = document.getElementById(`newDefectInput-${inspectionType}`);
+    const defectName = input.value.trim();
+
+    if (defectName && !state.partTypeStandards.Housing.defectTypes[inspectionType].includes(defectName)) {
+        state.partTypeStandards.Housing.defectTypes[inspectionType].push(defectName);
+        input.value = '';
+
+        // Save to Firebase
+        await addDefectTypeToDb(inspectionType, defectName);
+
+        // Update display
+        updateDefectTags(inspectionType);
+    }
+}
+
+async function removeDefectType(inspectionType, index) {
+    state.partTypeStandards.Housing.defectTypes[inspectionType].splice(index, 1);
+
+    // Save to Firebase
+    await removeDefectTypeFromDb(inspectionType, index);
+
+    updateDefectTags(inspectionType);
+}
+
+function updateDefectTags(inspectionType) {
+    const container = document.getElementById(`defectTags-${inspectionType}`);
+    const defectTagsHtml = state.partTypeStandards.Housing.defectTypes[inspectionType].map((defect, index) => `
+        <div class="defect-tag">
+            ${defect}
+            <button class="defect-tag-remove" onclick="removeDefectType('${inspectionType}', ${index})">×</button>
+        </div>
+    `).join('');
+    container.innerHTML = defectTagsHtml;
+}
+
+function setInspectionSequence(sequence) {
+    state.partTypeStandards.Housing.inspectionSequence = sequence;
+
+    // Update UI
+    document.querySelectorAll('.sequence-option').forEach(el => {
+        el.classList.remove('selected');
+    });
+    event.target.closest('.sequence-option').classList.add('selected');
+}
+
+async function saveStandards() {
+    const capacity = document.getElementById('containerCapacity').value;
+    state.partTypeStandards.Housing.containerCapacity = parseInt(capacity);
+
+    // Save to Firebase
+    await updateContainerCapacity(parseInt(capacity));
+
+    showModal({
+        title: 'Gespeichert',
+        content: '<p>Standards wurden erfolgreich gespeichert!</p>',
+        buttons: [
+            { text: 'OK', action: () => { closeModal(); closeStandards(); } }
+        ]
+    });
+}
+
+function closeStandards() {
+    const modal = document.getElementById('standardsModal');
+    if (modal) {
+        modal.remove();
+    }
+}
+
+// Make functions globally available for inline event handlers IMMEDIATELY
+// (before DOMContentLoaded so onclick handlers work)
+window.addLoginDigit = addLoginDigit;
+window.clearLoginNumber = clearLoginNumber;
+window.login = login;
+window.toggleLanguage = toggleLanguage;
+window.togglePause = togglePause;
+window.goBack = goBack;
+window.openStatistics = openStatistics;
+window.showMainMenu = showMainMenu;
+window.showSerieMenu = showSerieMenu;
+window.startInspection = startInspection;
+window.showFeatureNotAvailable = showFeatureNotAvailable;
+window.showFeatureInProgress = showFeatureInProgress;
+window.showScanConfirmation = showScanConfirmation;
+window.showContainerNumberInput = showContainerNumberInput;
+window.addContainerDigit = addContainerDigit;
+window.clearContainerNumber = clearContainerNumber;
+window.submitContainerNumber = submitContainerNumber;
+window.showQuantitySelection = showQuantitySelection;
+window.setQuantity = setQuantity;
+window.showManualQuantity = showManualQuantity;
+window.addQuantityDigit = addQuantityDigit;
+window.clearQuantityNumber = clearQuantityNumber;
+window.submitManualQuantity = submitManualQuantity;
+window.showInspectionInterface = showInspectionInterface;
+window.showInspectorModal = showInspectorModal;
+window.closeInspectorModal = closeInspectorModal;
+window.registerDefect = registerDefect;
+window.completeInspection = completeInspection;
+window.resetInspection = resetInspection;
+window.nextInspection = nextInspection;
+window.executeModalAction = executeModalAction;
+window.closeModal = closeModal;
+window.openBarcodeScanner = openBarcodeScanner;
+window.closeBarcodeScanner = closeBarcodeScanner;
+window.submitManualBarcode = submitManualBarcode;
+window.openDatabase = openDatabase;
+window.closeDatabase = closeDatabase;
+window.openStandards = openStandards;
+window.closeStandards = closeStandards;
+window.addDefectType = addDefectType;
+window.removeDefectType = removeDefectType;
+window.saveStandards = saveStandards;
+window.handleDragStart = handleDragStart;
+window.handleDragEnd = handleDragEnd;
+window.handleDragOver = handleDragOver;
+window.handleDragLeave = handleDragLeave;
+window.handleDrop = handleDrop;
+window.handleDropToAvailable = handleDropToAvailable;
+window.handleTouchStart = handleTouchStart;
+window.handleTouchMove = handleTouchMove;
+window.handleTouchEnd = handleTouchEnd;
+
+// Initialize app after DOM is ready
+document.addEventListener('DOMContentLoaded', async () => {
+    console.log('Initializing Firebase and app state...');
+
+    try {
+        await initializeDatabase();
+        await initializeState();
+        console.log('✅ App initialized with Firebase successfully');
+
+        // Initialize login display
+        updateLoginDisplay();
+
+        // Register Service Worker for PWA
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('./sw.js')
+                .then(registration => {
+                    console.log('✅ Service Worker registered:', registration.scope);
+                })
+                .catch(error => {
+                    console.log('❌ Service Worker registration failed:', error);
+                });
+        }
+    } catch (error) {
+        console.error('❌ Error initializing app:', error);
+        alert('Fehler beim Initialisieren der App. Bitte die Seite neu laden.');
+    }
+});

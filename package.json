@@ -1,0 +1,17 @@
+{
+  "name": "tablet-simulation",
+  "version": "2.0.0",
+  "description": "Qualitätsprüfung - Tablet Interface mit Firebase",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "firebase": "^10.7.1"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}
