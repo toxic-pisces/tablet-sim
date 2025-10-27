@@ -1,8 +1,9 @@
 {
   "name": "Qualitätsprüfung - Tablet Interface",
   "short_name": "QS Prüfung",
-  "description": "Tablet-Interface für Qualitätsprüfung",
-  "start_url": "./test.html",
+  "description": "Tablet-Interface für Qualitätsprüfung mit Firebase",
+  "start_url": "/tablet-sim/",
+  "scope": "/tablet-sim/",
   "display": "standalone",
   "background_color": "#f5f7fa",
   "theme_color": "#2a5298",
