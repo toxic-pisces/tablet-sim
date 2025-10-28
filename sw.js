@@ -1,4 +1,4 @@
-const CACHE_NAME = 'qs-pruefung-v2';
+const CACHE_NAME = 'qs-pruefung-v3';
 const BASE_PATH = '/tablet-sim/';
 const urlsToCache = [
   `${BASE_PATH}`,
