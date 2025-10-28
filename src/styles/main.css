@@ -868,19 +868,22 @@ input[type=number] {
 }
 
 .status-indicator {
+    display: inline-block;
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    animation: blink 2s infinite;
+    margin-right: 6px;
+    vertical-align: middle;
 }
 
 .status-active {
-    background: #10b981;
-    box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+    background: #f59e0b;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+    animation: blink 2s infinite;
 }
 
 .status-finished {
-    background: #64748b;
+    background: #10b981;
     animation: none;
 }
 
@@ -1892,6 +1895,87 @@ input[type=number] {
 
 .numpad-btn.wide {
     grid-column: span 2;
+}
+
+/* Drawing Modal */
+.drawing-modal {
+    background: white;
+    border-radius: 16px;
+    max-width: 95vw;
+    max-height: 95vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.3);
+}
+
+.drawing-header {
+    padding: 20px 30px;
+    background: linear-gradient(135deg, #2a5298, #1e3a6f);
+    color: white;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.drawing-header h2 {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 600;
+}
+
+.drawing-content {
+    padding: 20px;
+    overflow: auto;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: #f8f9fa;
+    max-height: calc(95vh - 80px);
+}
+
+.drawing-content img {
+    max-width: 100%;
+    max-height: calc(95vh - 120px);
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.modal-close-btn {
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    color: white;
+    font-size: 32px;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    line-height: 1;
+}
+
+.modal-close-btn:hover {
+    background: rgba(255, 255, 255, 0.3);
+    transform: scale(1.1);
+}
+
+/* Drawing button styling */
+.btn-drawing {
+    background: linear-gradient(135deg, #8b5cf6, #7c3aed) !important;
+}
+
+.btn-drawing:hover:not(:disabled) {
+    background: linear-gradient(135deg, #7c3aed, #6d28d9) !important;
+}
+
+.btn-drawing:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: #94a3b8 !important;
 }
 
 

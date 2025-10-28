@@ -34,7 +34,8 @@ export const state = {
         ['lehre'],
         ['mass'],
         ['sicht']
-      ]
+      ],
+      drawing: null // Base64 encoded image
     }
   }
 };
@@ -146,6 +147,20 @@ export const getTBKEntry = async (batchNummer) => {
   } catch (error) {
     console.error('Error getting TBK entry:', error);
     return null;
+  }
+};
+
+/**
+ * Update TBK entry
+ */
+export const updateTBKEntry = async (batchNummer, updates) => {
+  try {
+    await updateData(`tbkDatabase/${batchNummer}`, updates);
+    console.log('TBK entry updated:', batchNummer);
+    return { success: true };
+  } catch (error) {
+    console.error('Error updating TBK entry:', error);
+    return { success: false, error };
   }
 };
 

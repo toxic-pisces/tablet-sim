@@ -4,6 +4,7 @@ import {
   initializeState,
   addTBKEntry,
   getTBKEntry,
+  updateTBKEntry,
   addInspection,
   updateInspection,
   getInspection,
@@ -80,6 +81,7 @@ const translations = {
         confirm: 'Bestätigen',
         quantity: 'Teileanzahl',
         fullContainer: 'Voller Behälter',
+        currentState: 'Aktueller Stand',
         manual: 'Manuell eingeben',
         articleNumber: 'Artikelnummer',
         totalQuantity: 'Gesamtmenge',
@@ -109,7 +111,8 @@ const translations = {
         containerNumber: 'Wprowadź numer kontenera',
         confirm: 'Potwierdź',
         quantity: 'Ilość części',
-        fullContainer: 'Pełny kontener (200 części)',
+        fullContainer: 'Pełny kontener',
+        currentState: 'Aktualny stan',
         manual: 'Wprowadź ręcznie',
         articleNumber: 'Numer artykułu',
         totalQuantity: 'Całkowita ilość',
@@ -323,8 +326,19 @@ async function checkContainerCapacity(tbkNumber, containerNumber, inspectionType
     const codeToLabel = { 'L': 'Lehre', 'M': 'Maß', 'S': 'Sicht' };
     const inspectionCode = typeToCode[inspectionType];
 
-    // Calculate actual parts in container (adjusted for NIO from previous inspections)
-    const actualPartsInContainer = calculateActualPartsInContainer(batchNummer, inspectionType);
+    // Get actual parts in container from TBK database
+    const tbkEntry = await getTBKEntry(batchNummer);
+    let actualPartsInContainer;
+
+    if (tbkEntry && tbkEntry.currentPartsInContainer !== null && tbkEntry.currentPartsInContainer !== undefined) {
+        // Use value from TBK database
+        actualPartsInContainer = tbkEntry.currentPartsInContainer;
+        console.log(`📊 currentPartsInContainer from TBK: ${actualPartsInContainer}`);
+    } else {
+        // First inspection - currentPartsInContainer not yet set (will be set when quantity is chosen)
+        actualPartsInContainer = null;
+        console.log(`📊 First inspection - currentPartsInContainer not yet initialized`);
+    }
 
     // IMPORTANT: Get FRESH data from Firebase, not cached local state
     console.log('🔍 Fetching fresh inspection data from Firebase...');
@@ -346,7 +360,7 @@ async function checkContainerCapacity(tbkNumber, containerNumber, inspectionType
     // If there are NO inspections at all, this is the first one -> allow
     if (allInspectionsOfType.length === 0) {
         console.log('✅ First inspection for this type - allowing');
-        state.currentInspection.remainingCapacity = actualPartsInContainer;
+        state.currentInspection.remainingCapacity = containerCapacity;
         state.currentInspection.actualPartsInContainer = actualPartsInContainer;
         return null; // Allow to proceed
     }
@@ -385,7 +399,7 @@ async function checkContainerCapacity(tbkNumber, containerNumber, inspectionType
             total: activeInspection.total,
             ende: activeInspection.ende
         });
-        state.currentInspection.remainingCapacity = actualPartsInContainer;
+        state.currentInspection.remainingCapacity = containerCapacity;
         state.currentInspection.actualPartsInContainer = actualPartsInContainer;
         return null; // Allow to proceed
     }
@@ -393,7 +407,7 @@ async function checkContainerCapacity(tbkNumber, containerNumber, inspectionType
     // If no completed inspections (only active ones), allow
     if (completedInspections.length === 0) {
         console.log('✅ No completed inspections - allowing');
-        state.currentInspection.remainingCapacity = actualPartsInContainer;
+        state.currentInspection.remainingCapacity = containerCapacity;
         state.currentInspection.actualPartsInContainer = actualPartsInContainer;
         return null;
     }
@@ -401,66 +415,25 @@ async function checkContainerCapacity(tbkNumber, containerNumber, inspectionType
     // Calculate total parts already inspected for this type (only completed with ende !== null)
     const totalInspected = completedInspections.reduce((sum, entry) => sum + entry.total, 0);
 
-    console.log(`📊 Total inspected (completed only): ${totalInspected}/${actualPartsInContainer}`);
+    console.log(`📊 Total inspected (completed only): ${totalInspected}/${containerCapacity}`);
 
-    // Calculate remaining capacity based on actual parts in container
-    const remainingCapacity = actualPartsInContainer - totalInspected;
+    // Calculate remaining capacity based on CONTAINER CAPACITY (not currentPartsInContainer!)
+    // Container is only full when totalInspected >= containerCapacity
+    const remainingCapacity = containerCapacity - totalInspected;
 
     if (remainingCapacity <= 0) {
         const label = codeToLabel[inspectionCode];
         console.log('❌ Container full - blocking');
-        return `Dieser Behälter ist für ${label}-Prüfung bereits voll (${actualPartsInContainer}/${actualPartsInContainer} Teile geprüft).`;
+        return `Dieser Behälter ist für ${label}-Prüfung bereits voll (${containerCapacity}/${containerCapacity} Teile geprüft).`;
     }
 
-    console.log(`✅ Remaining capacity: ${remainingCapacity} parts`);
+    console.log(`✅ Remaining capacity: ${remainingCapacity} parts (can still add inspections up to container capacity)`);
 
     // Store remaining capacity for quantity selection
     state.currentInspection.remainingCapacity = remainingCapacity;
     state.currentInspection.actualPartsInContainer = actualPartsInContainer;
 
     return null;
-}
-
-function calculateActualPartsInContainer(batchNummer, currentInspectionType) {
-    const containerCapacity = state.partTypeStandards.Housing.containerCapacity;
-    const sequence = state.partTypeStandards.Housing.inspectionSequence;
-    const typeToCode = { 'lehre': 'L', 'mass': 'M', 'sicht': 'S' };
-
-    // Find which step the current inspection is in
-    let currentStepIndex = -1;
-    for (let i = 0; i < sequence.length; i++) {
-        if (sequence[i].includes(currentInspectionType)) {
-            currentStepIndex = i;
-            break;
-        }
-    }
-
-    if (currentStepIndex === -1) return containerCapacity;
-
-    // Sum up all NIO parts from previous inspection steps
-    let totalNIO = 0;
-
-    for (let stepIndex = 0; stepIndex < currentStepIndex; stepIndex++) {
-        const inspectionsInStep = sequence[stepIndex];
-
-        for (const inspType of inspectionsInStep) {
-            const inspCode = typeToCode[inspType];
-
-            // Get all completed inspections of this type for this batch (use array version)
-            const completedInspections = getInspectionDatabaseAsArray().filter(
-                entry => entry.batchNummer === batchNummer &&
-                         entry.inspektion === inspCode &&
-                         entry.nio !== null
-            );
-
-            // Sum NIO from this inspection type
-            const nioFromInspection = completedInspections.reduce((sum, entry) => sum + entry.nio, 0);
-            totalNIO += nioFromInspection;
-        }
-    }
-
-    // Return container capacity minus all NIO from previous steps
-    return containerCapacity - totalNIO;
 }
 
 function showScanSimulation() {
@@ -589,60 +562,85 @@ function updateContainerDisplay() {
     }
 }
 
+// Track container number verification
+let containerNumberVerification = {
+    first: null,
+    second: null,
+    third: null,
+    attempt: 1 // 1 = first entry, 2 = confirmation, 3 = tie-breaker
+};
+
 async function submitContainerNumber() {
     if (containerNumberInput.length === 6) {
-        state.currentInspection.containerNumber = containerNumberInput;
+        const currentInput = containerNumberInput;
 
-        // Add TBK + Container to database (creates new batch if needed)
-        await addTbkToDatabase(state.currentInspection.articleNumber, containerNumberInput);
+        if (containerNumberVerification.attempt === 1) {
+            // First entry - store and ask for confirmation
+            containerNumberVerification.first = currentInput;
+            containerNumberVerification.attempt = 2;
 
-        // Validate inspection sequence NOW (after we have container number)
-        const validationError = validateInspectionSequence(
-            state.currentInspection.articleNumber,
-            containerNumberInput,
-            state.currentInspection.inspectionType
-        );
-        if (validationError) {
+            // Clear input and show confirmation prompt
+            containerNumberInput = '';
+            updateContainerDisplay();
+
             showModal({
-                title: 'Reihenfolge nicht eingehalten',
-                content: `<p>${validationError}</p>`,
+                title: 'Bestätigung',
+                content: `<p style="font-size: 18px; text-align: center;">Bitte erneut eingeben</p>`,
                 buttons: [
-                    { text: 'Zurück zum Menü', action: () => { closeModal(); showSerieMenu(); } }
+                    { text: 'OK', action: () => { closeModal(); } }
                 ]
             });
+
+            // Vibration feedback
+            if ('vibrate' in navigator) {
+                navigator.vibrate(100);
+            }
             return;
         }
 
-        // Check container capacity for this inspection type (async - wait for Firebase)
-        const capacityError = await checkContainerCapacity(
-            state.currentInspection.articleNumber,
-            containerNumberInput,
-            state.currentInspection.inspectionType
-        );
-        if (capacityError) {
-            showModal({
-                title: 'Behälter voll',
-                content: `<p>${capacityError}</p>`,
-                buttons: [
-                    { text: 'Zurück zum Menü', action: () => { closeModal(); showSerieMenu(); } }
-                ]
-            });
-            return;
+        if (containerNumberVerification.attempt === 2) {
+            // Second entry - check if it matches first
+            containerNumberVerification.second = currentInput;
+
+            if (containerNumberVerification.first === containerNumberVerification.second) {
+                // Match! Proceed with inspection
+                await proceedWithInspection(currentInput);
+            } else {
+                // Mismatch! Ask for third entry
+                containerNumberVerification.attempt = 3;
+                containerNumberInput = '';
+                updateContainerDisplay();
+
+                showModal({
+                    title: 'Fehler',
+                    content: `<p style="color: #e74c3c; font-size: 18px; text-align: center; margin: 20px 0;">Nummern stimmen nicht überein</p>
+                              <p style="font-size: 16px; text-align: center;">Bitte korrekte Nummer eingeben</p>`,
+                    buttons: [
+                        { text: 'OK', action: () => { closeModal(); } }
+                    ]
+                });
+
+                // Error vibration
+                if ('vibrate' in navigator) {
+                    navigator.vibrate([100, 50, 100]);
+                }
+                return;
+            }
         }
 
-        // Vibration feedback
-        if ('vibrate' in navigator) {
-            navigator.vibrate(200);
-        }
+        if (containerNumberVerification.attempt === 3) {
+            // Third entry - use this as final decision
+            containerNumberVerification.third = currentInput;
 
-        // Check if there's an active inspection - if yes, skip quantity selection
-        const activeInspection = await checkForActiveInspection();
-        if (activeInspection) {
-            // Directly join the active inspection without asking for quantity
-            await setQuantity(activeInspection.total);
-        } else {
-            // Show quantity selection for first inspector
-            showQuantitySelection();
+            // Determine which number to use (match with first or second, or just use third)
+            let finalNumber = currentInput;
+            if (currentInput === containerNumberVerification.first) {
+                finalNumber = containerNumberVerification.first;
+            } else if (currentInput === containerNumberVerification.second) {
+                finalNumber = containerNumberVerification.second;
+            }
+
+            await proceedWithInspection(finalNumber);
         }
     } else {
         // Shake animation if not complete
@@ -654,27 +652,118 @@ async function submitContainerNumber() {
     }
 }
 
+// Helper function to proceed with inspection after verification
+async function proceedWithInspection(containerNumber) {
+    // Reset verification state
+    containerNumberVerification = {
+        first: null,
+        second: null,
+        third: null,
+        attempt: 1
+    };
+
+    state.currentInspection.containerNumber = containerNumber;
+
+    // Add TBK + Container to database (creates new batch if needed)
+    await addTbkToDatabase(state.currentInspection.articleNumber, containerNumber);
+
+    // Validate inspection sequence NOW (after we have container number)
+    const validationError = validateInspectionSequence(
+        state.currentInspection.articleNumber,
+        containerNumber,
+        state.currentInspection.inspectionType
+    );
+    if (validationError) {
+        showModal({
+            title: 'Reihenfolge nicht eingehalten',
+            content: `<p>${validationError}</p>`,
+            buttons: [
+                { text: 'Zurück zum Menü', action: () => { closeModal(); showSerieMenu(); } }
+            ]
+        });
+        return;
+    }
+
+    // Check container capacity for this inspection type (async - wait for Firebase)
+    const capacityError = await checkContainerCapacity(
+        state.currentInspection.articleNumber,
+        containerNumber,
+        state.currentInspection.inspectionType
+    );
+    if (capacityError) {
+        showModal({
+            title: 'Behälter voll',
+            content: `<p>${capacityError}</p>`,
+            buttons: [
+                { text: 'Zurück zum Menü', action: () => { closeModal(); showSerieMenu(); } }
+            ]
+        });
+        return;
+    }
+
+    // Vibration feedback
+    if ('vibrate' in navigator) {
+        navigator.vibrate(200);
+    }
+
+    // Check if there are active team members doing the SAME inspection
+    const batchNummer = getBatchNumber(
+        state.currentInspection.articleNumber,
+        containerNumber
+    );
+
+    const currentType = state.currentInspection.inspectionType;
+    const typeToCode = { 'lehre': 'L', 'mass': 'M', 'sicht': 'S' };
+    const currentCode = typeToCode[currentType];
+
+    // Get all active inspections of the same type
+    const allInspections = getInspectionDatabaseAsArray();
+    const activeTeamMembers = allInspections.filter(
+        insp => insp.batchNummer === batchNummer &&
+                insp.inspektion === currentCode &&
+                (!insp.ende || insp.ende === null) &&
+                insp.pruefer !== state.personnelNumber
+    );
+
+    if (activeTeamMembers.length > 0) {
+        // There's an active team member doing the same inspection
+        // Pass the original total quantity to setQuantity - it will handle the splitting
+        const teamMember = activeTeamMembers[0];
+        // Use originalTotal if available, otherwise fall back to total (for backwards compatibility)
+        const totalQuantity = teamMember.originalTotal || teamMember.total;
+
+        console.log(`🔵 Joining team inspection with original total quantity ${totalQuantity} - setQuantity will split it`);
+
+        // Pass the full quantity - setQuantity will handle the splitting
+        await setQuantity(totalQuantity);
+    } else {
+        // No active team members - show quantity selection
+        await showQuantitySelection();
+    }
+}
+
 // Quantity Selection
-function showQuantitySelection() {
+async function showQuantitySelection() {
     addToHistory(showScanConfirmation);
     const content = document.getElementById('contentArea');
 
-    // Get actual parts in container (adjusted for NIO from previous inspections)
-    const actualPartsInContainer = state.currentInspection.actualPartsInContainer ||
-                                  state.partTypeStandards.Housing.containerCapacity;
-
-    // Check if there's a remaining capacity limit (if container was partially inspected)
-    const remainingCapacity = state.currentInspection.remainingCapacity || actualPartsInContainer;
+    // Get remaining capacity from validation (set in checkContainerCapacity)
+    // This is based on containerCapacity - totalInspected
+    const remainingCapacity = state.currentInspection.remainingCapacity || state.partTypeStandards.Housing.containerCapacity;
     const containerCapacity = state.partTypeStandards.Housing.containerCapacity;
-    const isPartialContainer = remainingCapacity < actualPartsInContainer;
+
+    // Determine button label and quantity
+    let buttonLabel = t('fullContainer');
+    let buttonQuantity = remainingCapacity;
+
+    // If remaining capacity is less than full capacity, show "Restkapazität"
+    if (remainingCapacity < containerCapacity) {
+        buttonLabel = 'Restkapazität';
+    }
 
     let fullContainerBtn = '';
-    if (remainingCapacity >= actualPartsInContainer) {
-        // Full container possible (show actual parts, not original capacity)
-        fullContainerBtn = `<button class="big-btn animate-scale stagger-1" onclick="setQuantity(${actualPartsInContainer})">${t('fullContainer')} (${actualPartsInContainer} Stk.)</button>`;
-    } else if (remainingCapacity > 0) {
-        // Only partial container possible
-        fullContainerBtn = `<button class="big-btn animate-scale stagger-1" onclick="setQuantity(${remainingCapacity})">Restkapazität (${remainingCapacity} Stk.)</button>`;
+    if (remainingCapacity > 0) {
+        fullContainerBtn = `<button class="big-btn animate-scale stagger-1" onclick="setQuantity(${buttonQuantity})">${buttonLabel} (${buttonQuantity} Stk.)</button>`;
     }
 
     content.innerHTML = `
@@ -688,26 +777,90 @@ function showQuantitySelection() {
 async function setQuantity(qty) {
     try {
         console.log('🔵 setQuantity called with qty:', qty);
-        state.currentInspection.quantity = qty;
+
+        console.log('🔵 Checking for active inspections (team members)...');
+        // Check if there are other active inspections for this batch (team members)
+        const teamMembers = await checkForActiveInspections();
+        console.log('🔵 Team members found:', teamMembers.length);
+
+        // Determine actual quantity based on team situation
+        let actualQuantity = qty;
+        const currentType = state.currentInspection.inspectionType;
+        const typeToCode = { 'lehre': 'L', 'mass': 'M', 'sicht': 'S' };
+        const currentCode = typeToCode[currentType];
+
+        if (teamMembers.length > 0) {
+            // Check if any team member is doing the SAME inspection type
+            const sameTypeMembers = teamMembers.filter(member => member.inspektion === currentCode);
+
+            if (sameTypeMembers.length > 0) {
+                // Same inspection type = split quantity equally
+                const totalInspectors = sameTypeMembers.length + 1; // +1 for current inspector
+
+                // Use originalTotal from the first team member if available, otherwise use qty
+                const firstMember = sameTypeMembers[0];
+                const originalTotal = firstMember.originalTotal || qty;
+
+                actualQuantity = Math.ceil(originalTotal / totalInspectors);
+                console.log(`🔵 Splitting ${originalTotal} parts among ${totalInspectors} inspectors = ${actualQuantity} parts each`);
+
+                // Store originalTotal for future splits
+                state.currentInspection.originalTotal = originalTotal;
+
+                // UPDATE existing team members' quantities in the database
+                for (const member of sameTypeMembers) {
+                    const inspectionKey = member.inspectionDbId || `${member.batchNummer}-${member.pruefungsNummer}`;
+                    console.log(`🔄 Updating quantity for inspector ${member.pruefer} (key: ${inspectionKey}) to ${actualQuantity}`);
+
+                    // Calculate new io based on the ratio
+                    // If member had total=200 and now gets total=100, and had io=180, new io should be 90
+                    let updatedIo = null;
+                    if (member.io !== null && member.io !== undefined) {
+                        // Member has already set io - adjust proportionally
+                        const ratio = actualQuantity / member.total;
+                        updatedIo = Math.ceil(member.io * ratio);
+                    }
+
+                    const updates = {
+                        total: actualQuantity,
+                        originalTotal: originalTotal  // Ensure originalTotal is stored
+                    };
+
+                    if (updatedIo !== null) {
+                        updates.io = updatedIo;
+                    }
+
+                    await updateInspection(inspectionKey, updates);
+                }
+            } else {
+                // Different inspection types = each inspector does all parts
+                actualQuantity = qty;
+                state.currentInspection.originalTotal = qty;
+                console.log(`🔵 Different inspection types - each inspector does all ${qty} parts`);
+            }
+        } else {
+            // No team members - store original total
+            state.currentInspection.originalTotal = qty;
+        }
+
+        state.currentInspection.quantity = actualQuantity;
         state.currentInspection.defects = {};
         state.currentInspection.totalDefects = 0;
 
-        console.log('🔵 Checking for active inspection...');
-        // Check if there's already an active inspection for this batch
-        const activeInspection = await checkForActiveInspection();
-        console.log('🔵 Active inspection found:', activeInspection ? 'YES' : 'NO');
+        // ALWAYS create own inspection entry (each inspector has their own row)
+        console.log('🔵 Creating new inspection entry...');
+        await createInspectionDatabaseEntry();
 
-        if (activeInspection) {
-            // Join existing inspection
-            console.log('🔵 Joining active inspection...');
-            await joinActiveInspection(activeInspection);
+        // Initialize or update currentPartsInContainer in TBK
+        await initializeOrUpdateCurrentParts(actualQuantity);
+
+        // Show notification based on team situation
+        if (teamMembers.length > 0) {
+            // Other inspectors are working on this batch
+            showTeamNotification(teamMembers, actualQuantity, qty);
         } else {
-            // Create new inspection database entry
-            console.log('🔵 Creating new inspection entry...');
-            await createInspectionDatabaseEntry();
-            
-            // Show notification that inspection started
-            showNotification('🎯 Prüfung gestartet', `Du prüfst ${qty} Teile`, 'success');
+            // Solo inspection
+            showNotification('🎯 Prüfung gestartet', `Du prüfst ${actualQuantity} Teile`, 'success');
         }
 
         console.log('🔵 Showing inspection interface...');
@@ -721,205 +874,107 @@ async function setQuantity(qty) {
 // Inspection Database Functions
 
 /**
- * Check if there's already an active (unfinished) inspection for this batch
+ * Check for all active inspections (team members) for this batch
+ * Returns array of all active inspections in the same sequence step
  */
-async function checkForActiveInspection() {
+async function checkForActiveInspections() {
     const batchNummer = getBatchNumber(
         state.currentInspection.articleNumber,
         state.currentInspection.containerNumber
     );
 
     if (!batchNummer) {
-        console.log('🔍 checkForActiveInspection: No batch number found');
-        return null;
+        console.log('🔍 checkForActiveInspections: No batch number found');
+        return [];
     }
 
-    const inspectionCode = state.currentInspection.inspectionType === 'mass' ? 'M' :
-                          state.currentInspection.inspectionType === 'sicht' ? 'S' : 'L';
+    const currentType = state.currentInspection.inspectionType;
 
-    console.log('🔍 checkForActiveInspection: Looking for batch', batchNummer, 'type', inspectionCode);
+    console.log('🔍 checkForActiveInspections: Looking for batch', batchNummer, 'type', currentType);
 
-    // Find active inspections (where ende is null or doesn't exist)
-    const allInspections = getInspectionDatabaseAsArray();
-    console.log('🔍 checkForActiveInspection: Total inspections in DB:', allInspections.length);
-    
-    const activeInspection = allInspections.find(
-        insp => {
-            const matches = insp.batchNummer === batchNummer &&
-                           (!insp.ende || insp.ende === null || insp.ende === undefined) &&
-                           insp.inspektion === inspectionCode;
-            
-            if (insp.batchNummer === batchNummer && insp.inspektion === inspectionCode) {
-                console.log('🔍 Found matching inspection:', {
-                    batch: insp.batchNummer,
-                    type: insp.inspektion,
-                    ende: insp.ende,
-                    isActive: !insp.ende,
-                    matches: matches
-                });
-            }
-            
-            return matches;
+    // Get inspection sequence to find which types are in the same step
+    const sequence = state.partTypeStandards.Housing.inspectionSequence;
+    let typesInSameStep = [currentType];
+
+    // Find which step the current inspection is in
+    for (let i = 0; i < sequence.length; i++) {
+        if (sequence[i].includes(currentType)) {
+            typesInSameStep = sequence[i];
+            console.log('🔍 Types in same sequence step:', typesInSameStep);
+            break;
         }
+    }
+
+    // Map types to codes
+    const typeToCode = { 'lehre': 'L', 'mass': 'M', 'sicht': 'S' };
+    const codesInSameStep = typesInSameStep.map(t => typeToCode[t]);
+    console.log('🔍 Codes in same step:', codesInSameStep);
+
+    // Find ALL active inspections in the same step (not just from current user)
+    const allInspections = getInspectionDatabaseAsArray();
+    const activeTeamMembers = allInspections.filter(
+        insp => insp.batchNummer === batchNummer &&
+                (!insp.ende || insp.ende === null || insp.ende === undefined) &&
+                codesInSameStep.includes(insp.inspektion) &&
+                insp.pruefer !== state.personnelNumber // Exclude current user
     );
 
-    console.log('🔍 checkForActiveInspection result:', activeInspection ? 'FOUND' : 'NOT FOUND');
-    return activeInspection || null;
+    console.log('🔍 checkForActiveInspections: Found', activeTeamMembers.length, 'team members');
+    return activeTeamMembers;
 }
 
 /**
- * Join an existing active inspection
+ * Show team notification when other inspectors are working on the same batch
  */
-async function joinActiveInspection(activeInspection) {
-    console.log('🔵 Joining active inspection:', activeInspection);
-    
-    // Set current inspection to the active one
-    state.currentInspection.quantity = activeInspection.total;
-    state.currentInspection.defects = activeInspection.defects || {};
-    state.currentInspection.totalDefects = activeInspection.nio || 0;
+function showTeamNotification(teamMembers, actualQuantity, originalQuantity) {
+    const codeToLabel = { 'L': 'Lehre', 'M': 'Maß', 'S': 'Sicht' };
+    const typeToCode = { 'lehre': 'L', 'mass': 'M', 'sicht': 'S' };
+    const currentCode = typeToCode[state.currentInspection.inspectionType];
+    const sameTypeMembers = teamMembers.filter(member => member.inspektion === currentCode);
+    const isSameType = sameTypeMembers.length > 0;
 
-    // Create inspection key from batch and prüfungsnummer
-    const inspectionKey = `${activeInspection.batchNummer}-${activeInspection.pruefungsNummer}`;
-    state.currentInspection.inspectionDbId = inspectionKey;
+    if (teamMembers.length === 1) {
+        // One other inspector
+        const member = teamMembers[0];
+        const typeLabel = codeToLabel[member.inspektion];
 
-    // Add current user to activeInspectors list
-    const currentInspectors = activeInspection.activeInspectors || [activeInspection.pruefer];
-    if (!currentInspectors.includes(state.personnelNumber)) {
-        currentInspectors.push(state.personnelNumber);
-
-        // Calculate parts per inspector
-        const partsPerInspector = Math.floor(activeInspection.total / currentInspectors.length);
-
-        await updateInspection(inspectionKey, {
-            activeInspectors: currentInspectors
-        });
-
-        // Show notification to joining user
-        const otherInspectors = currentInspectors.filter(p => p !== state.personnelNumber);
-        showNotification(
-            '� Prüfung beigetreten',
-            `Du prüfst mit ${otherInspectors.length} ${otherInspectors.length === 1 ? 'Prüfer' : 'Prüfern'} zusammen • Je ${partsPerInspector} Teile`,
-            'success',
-            5000
-        );
-
-        console.log(`✅ Prüfer ${state.personnelNumber} joined inspection ${inspectionKey}`);
-    } else {
-        console.log(`ℹ️ Prüfer ${state.personnelNumber} already in this inspection`);
-    }
-
-    // Setup real-time listener for this inspection
-    setupInspectionListener(inspectionKey);
-}
-
-/**
- * Setup real-time listener for a specific inspection
- */
-function setupInspectionListener(inspectionKey) {
-    // Listen to changes on this inspection
-    listenToData(`inspectionDatabase/${inspectionKey}`, (data) => {
-        if (!data) return;
-
-        // Update local state with remote changes
-        if (data.defects) {
-            state.currentInspection.defects = data.defects;
-        }
-        if (data.nio !== null && data.nio !== undefined) {
-            state.currentInspection.totalDefects = data.nio;
-        }
-        if (data.total !== null && data.total !== undefined) {
-            state.currentInspection.quantity = data.total;
-        }
-
-        // Update UI
-        updateDefectCounters();
-        
-        // Update active inspectors display in real-time
-        updateActiveInspectorsDisplay(data.activeInspectors || []);
-
-        // Check if a new inspector joined
-        if (data.activeInspectors && data.activeInspectors.length > 1) {
-            const otherInspectors = data.activeInspectors.filter(p => p !== state.personnelNumber);
-
-            // Show notification if someone new joined (only once per inspector)
-            if (otherInspectors.length > 0 && !state.notifiedInspectors) {
-                state.notifiedInspectors = [];
-            }
-
-            otherInspectors.forEach(inspector => {
-                if (!state.notifiedInspectors.includes(inspector)) {
-                    state.notifiedInspectors.push(inspector);
-
-                    // Calculate parts per inspector
-                    const partsPerInspector = Math.floor(data.total / data.activeInspectors.length);
-                    
-                    // Show notification
-                    showNotification(
-                        '👥 Neuer Prüfer',
-                        `Prüfer ${inspector} arbeitet jetzt mit • Je ${partsPerInspector} Teile`,
-                        'info',
-                        4000
-                    );
-                }
-            });
-        }
-
-        // Check if inspection was completed (ende field added)
-        if (data.ende && !state.inspectionCompletedNotified) {
-            state.inspectionCompletedNotified = true;
-            
-            // Show notification if someone else completed it
-            if (data.ende && state.currentInspection.inspectionDbId === inspectionKey) {
-                showNotification(
-                    '✅ Prüfung abgeschlossen',
-                    `IO: ${data.io || 0} • NIO: ${data.nio || 0}`,
-                    'success',
-                    5000
-                );
-            }
-        }
-    });
-}
-
-// Helper function to update active inspectors display
-function updateActiveInspectorsDisplay(activeInspectors) {
-    console.log('🔄 updateActiveInspectorsDisplay called with:', activeInspectors);
-    
-    const el = document.getElementById('activeInspectorsDisplay');
-    if (!el) {
-        console.log('⚠️ activeInspectorsDisplay element not found in DOM');
-        return;
-    }
-
-    const otherActive = activeInspectors.filter(p => p !== state.personnelNumber);
-    console.log('📊 Current user:', state.personnelNumber, 'Others:', otherActive);
-
-    if (activeInspectors.length === 1) {
-        // Only current user
-        console.log('✅ Showing: Only you');
-        el.innerHTML = '<span style="color: #94a3b8; font-size: 18px;">Nur du</span>';
-        
-        // Update total quantity display to show full amount
-        const totalEl = document.getElementById('totalQuantityDisplay');
-        if (totalEl) {
-            totalEl.textContent = state.currentInspection.quantity;
+        if (isSameType) {
+            // Same type - quantity was split
+            showNotification(
+                'Team-Pruefung',
+                `Pruefer ${member.pruefer} arbeitet auch an diesem Behaelter. Ihr teilt euch ${originalQuantity} Teile (je ${actualQuantity} Teile)`,
+                'info',
+                5000
+            );
+        } else {
+            // Different type - each does full quantity
+            showNotification(
+                'Parallel-Pruefung',
+                `Pruefer ${member.pruefer} macht parallel ${typeLabel}-Pruefung (${actualQuantity} Teile)`,
+                'info',
+                4000
+            );
         }
     } else {
         // Multiple inspectors
-        const partsPerInspector = Math.floor(state.currentInspection.quantity / activeInspectors.length);
-        console.log('✅ Showing:', activeInspectors.length, 'inspectors, each gets', partsPerInspector, 'parts');
-        el.innerHTML = `
-            <span class="status-indicator status-active"></span>
-            <span style="display: flex; flex-direction: column; align-items: flex-start;">
-                <span style="font-size: 18px;">${activeInspectors.length} Prüfer (je ${partsPerInspector} Teile)</span>
-                <span style="font-size: 14px; color: #64748b;">${activeInspectors.map(p => `P-${p}`).join(', ')}</span>
-            </span>
-        `;
-        
-        // Update total quantity display to show distributed amount
-        const totalEl = document.getElementById('totalQuantityDisplay');
-        if (totalEl) {
-            totalEl.innerHTML = `<span style="font-size: 24px;">${partsPerInspector}</span><span style="font-size: 14px; color: #64748b; margin-left: 5px;">/ ${state.currentInspection.quantity}</span>`;
+        if (isSameType) {
+            // At least one doing same type - quantity was split
+            const totalInspectors = sameTypeMembers.length + 1;
+            showNotification(
+                'Team-Pruefung',
+                `${sameTypeMembers.length} weitere Pruefer arbeiten am selben Typ. ${originalQuantity} Teile aufgeteilt auf ${totalInspectors} Pruefer (je ${actualQuantity} Teile)`,
+                'info',
+                5000
+            );
+        } else {
+            // All different types
+            const types = [...new Set(teamMembers.map(m => codeToLabel[m.inspektion]))];
+            showNotification(
+                'Parallel-Pruefung',
+                `${teamMembers.length} Pruefer arbeiten parallel an anderen Typen (${types.join(', ')})`,
+                'info',
+                4000
+            );
         }
     }
 }
@@ -951,16 +1006,17 @@ async function createInspectionDatabaseEntry() {
     const inspectionKey = `${batchNummer}-${pruefungsNummer}`;
 
     // Create entry with ALL fields initialized (even if null)
+    // Each inspector has their OWN entry (no shared activeInspectors)
     const entry = {
         pruefungsNummer: pruefungsNummer,
         batchNummer: batchNummer,
         inspektion: inspektion,
         total: state.currentInspection.quantity,
+        originalTotal: state.currentInspection.originalTotal || state.currentInspection.quantity, // Store original total for team splitting
         io: null,  // Will be filled when inspection completes
         nio: null, // Will be filled when inspection completes
         defects: {}, // Defects tracking
         pruefer: state.personnelNumber,
-        activeInspectors: [state.personnelNumber], // Track all active inspectors
         start: new Date().toLocaleString('de-DE', {
             day: '2-digit',
             month: '2-digit',
@@ -979,8 +1035,46 @@ async function createInspectionDatabaseEntry() {
     state.currentInspection.inspectionDbId = inspectionKey;
     console.log('✅ Inspection entry created:', inspectionKey);
 
-    // Setup real-time listener for this inspection too
-    setupInspectionListener(inspectionKey);
+    // Set up real-time listener for THIS inspection entry
+    // This allows us to react when another inspector joins and the quantity is adjusted
+    setupInspectionQuantityListener(inspectionKey);
+}
+
+/**
+ * Listen to changes in the current inspection entry
+ * Updates local state if quantity changes (e.g., when another inspector joins)
+ */
+function setupInspectionQuantityListener(inspectionKey) {
+    listenToData(`inspectionDatabase/${inspectionKey}`, (data) => {
+        if (!data) return;
+
+        // Only update if we're still in an active inspection with this key
+        if (state.currentInspection.inspectionDbId !== inspectionKey) return;
+
+        // Check if total quantity has changed
+        if (data.total !== state.currentInspection.quantity) {
+            console.log(`🔄 Quantity changed from ${state.currentInspection.quantity} to ${data.total}`);
+
+            // Update local state
+            const oldQuantity = state.currentInspection.quantity;
+            state.currentInspection.quantity = data.total;
+
+            // Update UI to reflect new quantity in the inspection interface
+            const totalQuantityDisplay = document.getElementById('totalQuantityDisplay');
+            if (totalQuantityDisplay) {
+                totalQuantityDisplay.textContent = data.total;
+                console.log(`✅ Updated totalQuantityDisplay to ${data.total}`);
+            }
+
+            // Show notification
+            showNotification(
+                'Menge angepasst',
+                `Ein weiterer Prüfer ist beigetreten. Deine Menge wurde von ${oldQuantity} auf ${data.total} Teile angepasst.`,
+                'info',
+                5000
+            );
+        }
+    });
 }
 
 async function updateInspectionDatabaseEntry() {
@@ -1004,6 +1098,108 @@ async function updateInspectionDatabaseEntry() {
     };
 
     await updateInspection(state.currentInspection.inspectionDbId, updates);
+}
+
+/**
+ * Decrement currentPartsInContainer by 1 (called when a NIO is registered)
+ * This is the SIMPLEST approach: Every NIO immediately reduces the count by 1
+ */
+async function decrementCurrentPartsInContainer() {
+    const batchNummer = getBatchNumber(
+        state.currentInspection.articleNumber,
+        state.currentInspection.containerNumber
+    );
+
+    if (!batchNummer) {
+        console.error('decrementCurrentPartsInContainer: No batch number found');
+        return;
+    }
+
+    const tbkEntry = await getTBKEntry(batchNummer);
+
+    if (!tbkEntry || tbkEntry.currentPartsInContainer === null || tbkEntry.currentPartsInContainer === undefined) {
+        console.error('decrementCurrentPartsInContainer: currentPartsInContainer not initialized');
+        return;
+    }
+
+    const newValue = tbkEntry.currentPartsInContainer - 1;
+    console.log(`🔻 NIO registered: currentPartsInContainer ${tbkEntry.currentPartsInContainer} → ${newValue}`);
+
+    await updateTBKEntry(batchNummer, {
+        currentPartsInContainer: newValue
+    });
+}
+
+/**
+ * Initialize or update currentPartsInContainer when a quantity is set
+ * Called when a new inspection starts (total quantity is set)
+ *
+ * Logic:
+ * 1. If currentPartsInContainer is null (first inspection) → Set it to the quantity
+ * 2. If an inspection of the same type is already completed → Add the new quantity (nachträgliche Teile)
+ * 3. Otherwise → Do nothing (will be updated when inspection completes)
+ */
+async function initializeOrUpdateCurrentParts(quantity) {
+    const batchNummer = getBatchNumber(
+        state.currentInspection.articleNumber,
+        state.currentInspection.containerNumber
+    );
+
+    if (!batchNummer) {
+        console.log('⚠️ initializeOrUpdateCurrentParts: No batch number found');
+        return;
+    }
+
+    const tbkEntry = await getTBKEntry(batchNummer);
+    const currentType = state.currentInspection.inspectionType;
+    const typeToCode = { 'lehre': 'L', 'mass': 'M', 'sicht': 'S' };
+    const currentCode = typeToCode[currentType];
+
+    console.log(`\n========================================`);
+    console.log(`🔧 INITIALIZE/UPDATE CURRENT PARTS`);
+    console.log(`   Batch: ${batchNummer}`);
+    console.log(`   Type: ${currentType} (${currentCode})`);
+    console.log(`   Quantity: ${quantity}`);
+    console.log(`========================================`);
+
+    // Check if currentPartsInContainer is already set
+    if (tbkEntry && tbkEntry.currentPartsInContainer !== null && tbkEntry.currentPartsInContainer !== undefined) {
+        console.log(`📊 currentPartsInContainer already exists: ${tbkEntry.currentPartsInContainer}`);
+
+        // Check if there are completed inspections of the same type
+        const { getData } = await import('./firebase.js');
+        const freshInspectionData = await getData('inspectionDatabase');
+        const allInspections = freshInspectionData ? Object.values(freshInspectionData) : [];
+
+        const completedSameType = allInspections.filter(
+            insp => insp.batchNummer === batchNummer &&
+                    insp.inspektion === currentCode &&
+                    insp.ende !== null && insp.ende !== undefined &&
+                    insp.io !== null && insp.nio !== null &&
+                    insp.pruefer !== state.personnelNumber // Exclude current user's inspection
+        );
+
+        if (completedSameType.length > 0) {
+            // Nachträgliche Teile: Add quantity to currentPartsInContainer
+            const newCurrentParts = tbkEntry.currentPartsInContainer + quantity;
+            console.log(`✅ Nachträgliche Teile detected! Adding ${quantity} parts`);
+            console.log(`   Old: ${tbkEntry.currentPartsInContainer} → New: ${newCurrentParts}`);
+
+            await updateTBKEntry(batchNummer, {
+                currentPartsInContainer: newCurrentParts
+            });
+        } else {
+            console.log(`ℹ️ No completed inspections of same type yet - will update on completion`);
+        }
+    } else {
+        // First inspection - initialize currentPartsInContainer
+        console.log(`✅ First inspection - initializing currentPartsInContainer to ${quantity}`);
+        await updateTBKEntry(batchNummer, {
+            currentPartsInContainer: quantity
+        });
+    }
+
+    console.log(`========================================\n`);
 }
 
 async function deleteCurrentInspectionDatabaseEntry() {
@@ -1154,69 +1350,42 @@ function showInspectionInterface() {
     addToHistory(showQuantitySelection);
     const type = state.currentInspection.inspectionType;
 
-    // Get actual inspectors who worked on this container from database
-    const inspectors = getPreviousInspectors();
+    // Get ALL inspectors working on this batch (including current)
+    const allInspectors = getAllBatchInspectors();
 
     // Store inspectors in state for modal
-    state.currentInspection.otherInspectors = inspectors;
+    state.currentInspection.otherInspectors = allInspectors;
 
-    // Get CURRENT active inspectors from Firebase (real-time)
-    let activeInspectorsDisplay = '';
-    let activeInspectorsLabel = 'Aktive Prüfer';
+    // Determine display for unified inspector card
+    let inspectorLabel = 'Prüfer';
+    let inspectorDisplay = '';
 
-    if (state.currentInspection.inspectionDbId) {
-        // Get active inspectors from current inspection
-        getInspection(state.currentInspection.inspectionDbId).then(inspection => {
-            console.log('📊 Loading active inspectors from inspection:', inspection);
-            if (inspection && inspection.activeInspectors) {
-                console.log('📊 Active inspectors found:', inspection.activeInspectors);
-                // Force update after a short delay to ensure DOM is ready
-                setTimeout(() => {
-                    updateActiveInspectorsDisplay(inspection.activeInspectors);
-                }, 100);
-            } else {
-                console.log('📊 No active inspectors data found');
-            }
-        }).catch(err => {
-            console.error('❌ Error loading inspection:', err);
-        });
-
-        activeInspectorsDisplay = '<span style="color: #94a3b8; font-size: 18px;">Lädt...</span>';
-    } else {
-        activeInspectorsDisplay = '<span style="color: #94a3b8; font-size: 18px;">Nur du</span>';
-    }
-
-    // Determine what to show in the PREVIOUS inspectors info card
-    let otherInspectorLabel = '';
-    let otherInspectorDisplay = '';
-
-    if (inspectors.length === 0) {
-        otherInspectorLabel = 'Vorherige Prüfer';
-        otherInspectorDisplay = '<span style="color: #94a3b8; font-size: 18px;">Keine</span>';
-    } else if (inspectors.length === 1) {
-        // Single inspector - show type and inspection number
-        const inspector = inspectors[0];
-        otherInspectorLabel = t('inspector') + ` (${inspector.typeLabel})`;
-
+    if (allInspectors.length === 0) {
+        // Only current user
+        inspectorDisplay = '<span style="color: #94a3b8; font-size: 18px;">Nur du</span>';
+    } else if (allInspectors.length === 1) {
+        // One other inspector
+        const inspector = allInspectors[0];
         const statusClass = inspector.status === 'active' ? 'status-active' : 'status-finished';
 
-        otherInspectorDisplay = `
+        inspectorDisplay = `
             <span class="status-indicator ${statusClass}"></span>
-            ${inspector.typeLabel} - Prüf. ${inspector.pruefungsNummer}
+            P-${inspector.pruefer} (${inspector.typeLabel})
         `;
     } else {
-        // Multiple inspectors - show generic label
-        otherInspectorLabel = 'Vorherige Prüfer';
+        // Multiple inspectors
+        const activeCount = allInspectors.filter(insp => insp.status === 'active').length;
+        const finishedCount = allInspectors.filter(insp => insp.status === 'finished').length;
 
-        // Get the latest status (if any active, show active)
-        const hasActive = inspectors.some(insp => insp.status === 'active');
-        const statusClass = hasActive ? 'status-active' : 'status-finished';
-
-        otherInspectorDisplay = `
-            <span class="status-indicator ${statusClass}"></span>
-            ${inspectors.length} Prüfer
+        inspectorDisplay = `
+            ${activeCount > 0 ? `<span class="status-indicator status-active"></span>${activeCount} aktiv` : ''}
+            ${activeCount > 0 && finishedCount > 0 ? ' • ' : ''}
+            ${finishedCount > 0 ? `<span class="status-indicator status-finished"></span>${finishedCount} fertig` : ''}
         `;
     }
+
+    // Set up periodic refresh of inspector display
+    setupInspectorDisplayRefresh();
 
     // Get defect types from standards based on inspection type
     const defectTypes = state.partTypeStandards.Housing.defectTypes[type];
@@ -1224,7 +1393,7 @@ function showInspectionInterface() {
     const content = document.getElementById('contentArea');
     content.innerHTML = `
         <div class="inspection-container">
-            <div class="info-row" style="grid-template-columns: repeat(5, 1fr);">
+            <div class="info-row" style="grid-template-columns: repeat(4, 1fr);">
                 <div class="info-card animate-slide-up stagger-1">
                     <h3>Artikel</h3>
                     <p>Housing</p>
@@ -1237,16 +1406,10 @@ function showInspectionInterface() {
                     <h3>${t('defectCount')}</h3>
                     <p id="totalDefects">0</p>
                 </div>
-                <div class="info-card animate-slide-up stagger-4">
-                    <h3>${activeInspectorsLabel}</h3>
-                    <p class="inspector-status" id="activeInspectorsDisplay">
-                        ${activeInspectorsDisplay}
-                    </p>
-                </div>
-                <div class="info-card animate-slide-up stagger-5" style="cursor: ${inspectors.length > 0 ? 'pointer' : 'default'};" ${inspectors.length > 0 ? 'onclick="showInspectorModal()"' : ''}>
-                    <h3>${otherInspectorLabel}</h3>
-                    <p class="inspector-status">
-                        ${otherInspectorDisplay}
+                <div class="info-card animate-slide-up stagger-4" style="cursor: ${allInspectors.length > 0 ? 'pointer' : 'default'};" ${allInspectors.length > 0 ? 'onclick="showInspectorModal()"' : ''}>
+                    <h3>${inspectorLabel}</h3>
+                    <p class="inspector-status" id="inspectorDisplay">
+                        ${inspectorDisplay}
                     </p>
                 </div>
             </div>
@@ -1264,14 +1427,19 @@ function showInspectionInterface() {
             <div class="action-row">
                 <button class="action-btn btn-complete animate-slide-up stagger-2" onclick="completeInspection()">${t('inspectionComplete')}</button>
                 <button class="action-btn btn-reset animate-slide-up stagger-3" onclick="resetInspection()">${t('resetInspection')}</button>
-                <button class="action-btn btn-next animate-slide-up stagger-4" onclick="nextInspection()">${t('nextInspection')}</button>
+                <button class="action-btn btn-drawing animate-slide-up stagger-4" onclick="showDrawing()" ${!state.partTypeStandards.Housing.drawing ? 'disabled' : ''}>
+                    Zeichnung
+                </button>
             </div>
         </div>
     `;
 }
 
-// Get previous inspectors from database
-function getPreviousInspectors() {
+/**
+ * Get ALL inspectors working on this batch (not just previous steps, but current step too)
+ * Excludes the current user
+ */
+function getAllBatchInspectors() {
     const batchNummer = getBatchNumber(
         state.currentInspection.articleNumber,
         state.currentInspection.containerNumber
@@ -1279,66 +1447,86 @@ function getPreviousInspectors() {
 
     if (!batchNummer) return [];
 
-    const sequence = state.partTypeStandards.Housing.inspectionSequence;
     const typeToCode = { 'lehre': 'L', 'mass': 'M', 'sicht': 'S' };
     const codeToLabel = { 'L': 'Lehre', 'M': 'Maß', 'S': 'Sicht' };
-    const currentType = state.currentInspection.inspectionType;
 
-    // Find current step index
-    let currentStepIndex = -1;
-    for (let i = 0; i < sequence.length; i++) {
-        if (sequence[i].includes(currentType)) {
-            currentStepIndex = i;
-            break;
-        }
-    }
+    // Get ALL inspections for this batch
+    const allInspections = getInspectionDatabaseAsArray().filter(
+        entry => entry.batchNummer === batchNummer &&
+                 entry.pruefer !== state.personnelNumber // Exclude current user
+    );
 
-    if (currentStepIndex === -1) return [];
+    const inspectors = allInspections.map(entry => {
+        // Determine status (finished if inspection has ende, active if not)
+        const status = (entry.ende && entry.ende !== null) ? 'finished' : 'active';
 
-    const inspectors = [];
-    const avatarMap = {}; // Map personnel numbers to consistent avatars
-    const avatars = ['👨‍🔧', '👩‍🔧', '👨‍💼', '👩‍💼', '🧑‍🔧'];
-    let avatarIndex = 0;
-
-    // Go through all previous steps and collect unique inspectors
-    for (let stepIndex = 0; stepIndex < currentStepIndex; stepIndex++) {
-        const inspectionsInStep = sequence[stepIndex];
-
-        for (const inspType of inspectionsInStep) {
-            const inspCode = typeToCode[inspType];
-
-            // Get all inspections of this type for this batch (use array version)
-            const batchInspections = getInspectionDatabaseAsArray().filter(
-                entry => entry.batchNummer === batchNummer &&
-                         entry.inspektion === inspCode
-            );
-
-            // Collect ALL inspectors (not just unique ones)
-            batchInspections.forEach(entry => {
-                const pruefer = entry.pruefer;
-
-                // Assign consistent avatar
-                if (!avatarMap[pruefer]) {
-                    avatarMap[pruefer] = avatars[avatarIndex % avatars.length];
-                    avatarIndex++;
-                }
-
-                // Determine status (finished if inspection has ende, active if not)
-                const status = entry.ende ? 'finished' : 'active';
-
-                inspectors.push({
-                    name: `P-${pruefer}`,
-                    avatar: avatarMap[pruefer],
-                    status: status,
-                    type: inspType,
-                    typeLabel: codeToLabel[inspCode],
-                    pruefungsNummer: entry.pruefungsNummer
-                });
-            });
-        }
-    }
+        return {
+            pruefer: entry.pruefer,
+            status: status,
+            typeLabel: codeToLabel[entry.inspektion],
+            pruefungsNummer: entry.pruefungsNummer,
+            inspektion: entry.inspektion
+        };
+    });
 
     return inspectors;
+}
+
+/**
+ * Refresh inspector display periodically
+ */
+let inspectorRefreshInterval = null;
+
+function setupInspectorDisplayRefresh() {
+    // Clear any existing interval
+    if (inspectorRefreshInterval) {
+        clearInterval(inspectorRefreshInterval);
+    }
+
+    // Refresh every 2 seconds
+    inspectorRefreshInterval = setInterval(() => {
+        refreshInspectorDisplay();
+    }, 2000);
+}
+
+function refreshInspectorDisplay() {
+    const inspectorDisplayEl = document.getElementById('inspectorDisplay');
+    if (!inspectorDisplayEl) {
+        // Not on inspection screen anymore, stop refreshing
+        if (inspectorRefreshInterval) {
+            clearInterval(inspectorRefreshInterval);
+            inspectorRefreshInterval = null;
+        }
+        return;
+    }
+
+    const allInspectors = getAllBatchInspectors();
+    let inspectorDisplay = '';
+
+    if (allInspectors.length === 0) {
+        inspectorDisplay = '<span style="color: #94a3b8; font-size: 18px;">Nur du</span>';
+    } else if (allInspectors.length === 1) {
+        const inspector = allInspectors[0];
+        const statusClass = inspector.status === 'active' ? 'status-active' : 'status-finished';
+        inspectorDisplay = `
+            <span class="status-indicator ${statusClass}"></span>
+            P-${inspector.pruefer} (${inspector.typeLabel})
+        `;
+    } else {
+        const activeCount = allInspectors.filter(insp => insp.status === 'active').length;
+        const finishedCount = allInspectors.filter(insp => insp.status === 'finished').length;
+
+        inspectorDisplay = `
+            ${activeCount > 0 ? `<span class="status-indicator status-active"></span>${activeCount} aktiv` : ''}
+            ${activeCount > 0 && finishedCount > 0 ? ' • ' : ''}
+            ${finishedCount > 0 ? `<span class="status-indicator status-finished"></span>${finishedCount} fertig` : ''}
+        `;
+    }
+
+    inspectorDisplayEl.innerHTML = inspectorDisplay;
+
+    // Update stored state for modal
+    state.currentInspection.otherInspectors = allInspectors;
 }
 
 // Show Inspector Modal
@@ -1347,14 +1535,10 @@ function showInspectorModal() {
 
     if (inspectors.length === 0) return;
 
-    const avatarsHtml = inspectors.map(insp =>
-        `<div class="inspector-avatar-large">${insp.avatar}</div>`
-    ).join('');
-
     const inspectorCards = inspectors.map(insp => `
         <div class="inspector-info-item animate-slide-up">
             <h4>Prüfer</h4>
-            <p>${insp.name}</p>
+            <p>P-${insp.pruefer}</p>
         </div>
         <div class="inspector-info-item animate-slide-up">
             <h4>Prüfung</h4>
@@ -1363,10 +1547,8 @@ function showInspectorModal() {
         <div class="inspector-info-item animate-slide-up">
             <h4>Status</h4>
             <p>
-                <span class="inspector-status-badge ${insp.status}">
-                    <span class="status-dot"></span>
-                    ${insp.status === 'active' ? t('active') : t('finished')}
-                </span>
+                <span class="status-indicator ${insp.status === 'active' ? 'status-active' : 'status-finished'}"></span>
+                ${insp.status === 'active' ? t('active') : t('finished')}
             </p>
         </div>
     `).join('');
@@ -1381,10 +1563,7 @@ function showInspectorModal() {
     modal.innerHTML = `
         <div class="inspector-modal">
             <div class="inspector-header">
-                <div class="inspector-avatars">
-                    ${avatarsHtml}
-                </div>
-                <h2>Bisherige Prüfungen</h2>
+                <h2>Prüfer an diesem Behälter</h2>
                 <p>TBK ${state.currentInspection.articleNumber} • Artikel Housing</p>
             </div>
             <div class="inspector-body">
@@ -1435,6 +1614,9 @@ async function registerDefect(type, event) {
         });
     }
 
+    // DIRECTLY update currentPartsInContainer: subtract 1 for each NIO
+    await decrementCurrentPartsInContainer();
+
     // Remove class after animation
     setTimeout(() => {
         button.classList.remove('clicked');
@@ -1480,6 +1662,9 @@ async function completeInspection() {
     // Update inspection database entry with IO, NIO, and end time
     await updateInspectionDatabaseEntry();
 
+    // NOTE: currentPartsInContainer is already up-to-date!
+    // It's updated in real-time whenever a NIO is registered (see decrementCurrentPartsInContainer)
+
     showModal({
         title: t('inspectionComplete'),
         content: `
@@ -1510,24 +1695,34 @@ function resetInspection() {
     });
 }
 
-// Next Inspection
-function nextInspection() {
-    const good = state.currentInspection.quantity - state.currentInspection.totalDefects;
-    const bad = state.currentInspection.totalDefects;
+// Show Drawing
+function showDrawing() {
+    if (!state.partTypeStandards.Housing.drawing) {
+        showNotification('Keine Zeichnung', 'Es wurde keine technische Zeichnung hochgeladen', 'info');
+        return;
+    }
 
-    showModal({
-        title: t('nextInspection'),
-        content: `
-            <p><strong>Gut:</strong> ${good} Teile</p>
-            <p><strong>Schlecht:</strong> ${bad} Teile</p>
-            <p style="margin-top: 20px; color: #27ae60;">✓ Ergebnisse gespeichert</p>
-            <p style="margin-top: 20px;">Was möchten Sie als nächstes tun?</p>
-        `,
-        buttons: [
-            { text: 'Neue Teilebegleitkarte', action: () => { closeModal(); showSerieMenu(); } },
-            { text: 'Neuer Behälter', action: () => { closeModal(); showQuantitySelection(); } }
-        ]
-    });
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.onclick = (e) => {
+        if (e.target === modal || e.target.classList.contains('modal-close-btn')) {
+            modal.remove();
+        }
+    };
+
+    modal.innerHTML = `
+        <div class="drawing-modal">
+            <div class="drawing-header">
+                <h2>Technische Zeichnung - Housing</h2>
+                <button class="modal-close-btn" onclick="this.closest('.modal').remove()">×</button>
+            </div>
+            <div class="drawing-content">
+                <img src="${state.partTypeStandards.Housing.drawing}" alt="Technische Zeichnung" />
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
 }
 
 // Modal System
@@ -1821,7 +2016,8 @@ async function addTbkToDatabase(tbkNummer, containerNumber) {
             tbkNummer: tbkNummer,
             containerNumber: containerNumber,
             laufkarte: laufkarte,
-            chargenr: chargenr
+            chargenr: chargenr,
+            currentPartsInContainer: null  // Will be set after first inspection
         };
 
         await addTBKEntry(entry);
@@ -2046,6 +2242,25 @@ function openStandards() {
                         <div class="available-inspections" id="availableInspections"></div>
                         <div class="timeline" id="timeline"></div>
                     </div>
+                </div>
+
+                <div class="standards-section">
+                    <h3>📐 Technische Zeichnung</h3>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <input
+                            type="file"
+                            id="drawingUpload"
+                            accept="image/*"
+                            style="display: none;"
+                            onchange="handleDrawingUpload(event)"
+                        />
+                        <button class="btn-secondary" onclick="document.getElementById('drawingUpload').click()">
+                            ${standards.drawing ? '📄 Zeichnung ersetzen' : '📤 Zeichnung hochladen'}
+                        </button>
+                        ${standards.drawing ? '<button class="btn-secondary" onclick="removeDrawing()">🗑️ Entfernen</button>' : ''}
+                        ${standards.drawing ? '<button class="btn-secondary" onclick="previewDrawing()">👁️ Vorschau</button>' : ''}
+                    </div>
+                    ${standards.drawing ? '<p style="color: #10b981; margin-top: 10px; font-size: 14px;">✓ Zeichnung hochgeladen</p>' : '<p style="color: #94a3b8; margin-top: 10px; font-size: 14px;">Keine Zeichnung hochgeladen</p>'}
                 </div>
 
                 <button class="btn-primary" style="width: 100%; margin-top: 30px;" onclick="saveStandards()">
@@ -2466,12 +2681,95 @@ function setInspectionSequence(sequence) {
     event.target.closest('.sequence-option').classList.add('selected');
 }
 
+// Handle drawing upload
+async function handleDrawingUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    // Check file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+        showNotification('Fehler', 'Bild ist zu groß. Maximal 5MB erlaubt.', 'error');
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        const base64Image = e.target.result;
+
+        // Update local state
+        state.partTypeStandards.Housing.drawing = base64Image;
+
+        // Save directly to Firebase
+        const { updateData } = await import('./firebase.js');
+        await updateData('partTypeStandards/Housing', {
+            drawing: base64Image
+        });
+
+        showNotification('Erfolg', 'Zeichnung wurde hochgeladen und gespeichert', 'success');
+
+        // Refresh standards modal to show new state
+        closeStandards();
+        setTimeout(() => openStandards(), 100);
+    };
+    reader.onerror = () => {
+        showNotification('Fehler', 'Fehler beim Hochladen der Zeichnung', 'error');
+    };
+    reader.readAsDataURL(file);
+}
+
+// Remove drawing
+async function removeDrawing() {
+    // Update local state
+    state.partTypeStandards.Housing.drawing = null;
+
+    // Save directly to Firebase
+    const { updateData } = await import('./firebase.js');
+    await updateData('partTypeStandards/Housing', {
+        drawing: null
+    });
+
+    showNotification('Erfolg', 'Zeichnung wurde entfernt', 'success');
+    closeStandards();
+    setTimeout(() => openStandards(), 100);
+}
+
+// Preview drawing in modal
+function previewDrawing() {
+    if (!state.partTypeStandards.Housing.drawing) return;
+
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.onclick = (e) => {
+        if (e.target === modal || e.target.classList.contains('modal-close-btn')) {
+            modal.remove();
+        }
+    };
+
+    modal.innerHTML = `
+        <div class="drawing-modal">
+            <button class="modal-close-btn" onclick="this.closest('.modal').remove()">×</button>
+            <img src="${state.partTypeStandards.Housing.drawing}" alt="Technische Zeichnung" style="max-width: 90vw; max-height: 90vh; object-fit: contain;" />
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+}
+
 async function saveStandards() {
     const capacity = document.getElementById('containerCapacity').value;
     state.partTypeStandards.Housing.containerCapacity = parseInt(capacity);
 
-    // Save to Firebase
+    // Save to Firebase (capacity, drawing, and inspectionSequence)
     await updateContainerCapacity(parseInt(capacity));
+
+    // Save all other fields (drawing, inspectionSequence, defectTypes)
+    const { updateData } = await import('./firebase.js');
+    await updateData('partTypeStandards/Housing', {
+        drawing: state.partTypeStandards.Housing.drawing,
+        inspectionSequence: state.partTypeStandards.Housing.inspectionSequence,
+        defectTypes: state.partTypeStandards.Housing.defectTypes,
+        inspectionTypes: state.partTypeStandards.Housing.inspectionTypes
+    });
 
     showModal({
         title: 'Gespeichert',
@@ -2520,7 +2818,7 @@ window.closeInspectorModal = closeInspectorModal;
 window.registerDefect = registerDefect;
 window.completeInspection = completeInspection;
 window.resetInspection = resetInspection;
-window.nextInspection = nextInspection;
+window.showDrawing = showDrawing;
 window.executeModalAction = executeModalAction;
 window.closeModal = closeModal;
 window.openBarcodeScanner = openBarcodeScanner;
@@ -2533,6 +2831,9 @@ window.closeStandards = closeStandards;
 window.addDefectType = addDefectType;
 window.removeDefectType = removeDefectType;
 window.saveStandards = saveStandards;
+window.handleDrawingUpload = handleDrawingUpload;
+window.removeDrawing = removeDrawing;
+window.previewDrawing = previewDrawing;
 window.handleDragStart = handleDragStart;
 window.handleDragEnd = handleDragEnd;
 window.handleDragOver = handleDragOver;
